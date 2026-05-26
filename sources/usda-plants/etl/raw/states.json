@@ -1,0 +1,394 @@
+[
+  {
+    "state_code": "AK",
+    "state_name": "Alaska",
+    "state_fips": "02",
+    "country": "US",
+    "usda_plant_location_id": 3293
+  },
+  {
+    "state_code": "AL",
+    "state_name": "Alabama",
+    "state_fips": "01",
+    "country": "US",
+    "usda_plant_location_id": 3292
+  },
+  {
+    "state_code": "AR",
+    "state_name": "Arkansas",
+    "state_fips": "05",
+    "country": "US",
+    "usda_plant_location_id": 3295
+  },
+  {
+    "state_code": "AS",
+    "state_name": "American Samoa",
+    "state_fips": "60",
+    "country": "US",
+    "usda_plant_location_id": 3343
+  },
+  {
+    "state_code": "AZ",
+    "state_name": "Arizona",
+    "state_fips": "04",
+    "country": "US",
+    "usda_plant_location_id": 3294
+  },
+  {
+    "state_code": "CA",
+    "state_name": "California",
+    "state_fips": "06",
+    "country": "US",
+    "usda_plant_location_id": 3296
+  },
+  {
+    "state_code": "CO",
+    "state_name": "Colorado",
+    "state_fips": "08",
+    "country": "US",
+    "usda_plant_location_id": 3297
+  },
+  {
+    "state_code": "CT",
+    "state_name": "Connecticut",
+    "state_fips": "09",
+    "country": "US",
+    "usda_plant_location_id": 3298
+  },
+  {
+    "state_code": "DC",
+    "state_name": "District of Columbia",
+    "state_fips": "11",
+    "country": "US",
+    "usda_plant_location_id": 3300
+  },
+  {
+    "state_code": "DE",
+    "state_name": "Delaware",
+    "state_fips": "10",
+    "country": "US",
+    "usda_plant_location_id": 3299
+  },
+  {
+    "state_code": "FL",
+    "state_name": "Florida",
+    "state_fips": "12",
+    "country": "US",
+    "usda_plant_location_id": 3301
+  },
+  {
+    "state_code": "GA",
+    "state_name": "Georgia",
+    "state_fips": "13",
+    "country": "US",
+    "usda_plant_location_id": 3302
+  },
+  {
+    "state_code": "GU",
+    "state_name": "Guam",
+    "state_fips": "66",
+    "country": "US",
+    "usda_plant_location_id": 3345
+  },
+  {
+    "state_code": "HI",
+    "state_name": "Hawaii",
+    "state_fips": "15",
+    "country": "US",
+    "usda_plant_location_id": 3303
+  },
+  {
+    "state_code": "IA",
+    "state_name": "Iowa",
+    "state_fips": "19",
+    "country": "US",
+    "usda_plant_location_id": 3307
+  },
+  {
+    "state_code": "ID",
+    "state_name": "Idaho",
+    "state_fips": "16",
+    "country": "US",
+    "usda_plant_location_id": 3304
+  },
+  {
+    "state_code": "IL",
+    "state_name": "Illinois",
+    "state_fips": "17",
+    "country": "US",
+    "usda_plant_location_id": 3305
+  },
+  {
+    "state_code": "IN",
+    "state_name": "Indiana",
+    "state_fips": "18",
+    "country": "US",
+    "usda_plant_location_id": 3306
+  },
+  {
+    "state_code": "KS",
+    "state_name": "Kansas",
+    "state_fips": "20",
+    "country": "US",
+    "usda_plant_location_id": 3308
+  },
+  {
+    "state_code": "KY",
+    "state_name": "Kentucky",
+    "state_fips": "21",
+    "country": "US",
+    "usda_plant_location_id": 3309
+  },
+  {
+    "state_code": "LA",
+    "state_name": "Louisiana",
+    "state_fips": "22",
+    "country": "US",
+    "usda_plant_location_id": 3310
+  },
+  {
+    "state_code": "MA",
+    "state_name": "Massachusetts",
+    "state_fips": "25",
+    "country": "US",
+    "usda_plant_location_id": 3313
+  },
+  {
+    "state_code": "MD",
+    "state_name": "Maryland",
+    "state_fips": "24",
+    "country": "US",
+    "usda_plant_location_id": 3312
+  },
+  {
+    "state_code": "ME",
+    "state_name": "Maine",
+    "state_fips": "23",
+    "country": "US",
+    "usda_plant_location_id": 3311
+  },
+  {
+    "state_code": "MI",
+    "state_name": "Michigan",
+    "state_fips": "26",
+    "country": "US",
+    "usda_plant_location_id": 3314
+  },
+  {
+    "state_code": "MN",
+    "state_name": "Minnesota",
+    "state_fips": "27",
+    "country": "US",
+    "usda_plant_location_id": 3315
+  },
+  {
+    "state_code": "MO",
+    "state_name": "Missouri",
+    "state_fips": "29",
+    "country": "US",
+    "usda_plant_location_id": 3317
+  },
+  {
+    "state_code": "MP",
+    "state_name": "Northern Mariana Islands",
+    "state_fips": "69",
+    "country": "US",
+    "usda_plant_location_id": 3347
+  },
+  {
+    "state_code": "MS",
+    "state_name": "Mississippi",
+    "state_fips": "28",
+    "country": "US",
+    "usda_plant_location_id": 3316
+  },
+  {
+    "state_code": "MT",
+    "state_name": "Montana",
+    "state_fips": "30",
+    "country": "US",
+    "usda_plant_location_id": 3318
+  },
+  {
+    "state_code": "NC",
+    "state_name": "North Carolina",
+    "state_fips": "37",
+    "country": "US",
+    "usda_plant_location_id": 3325
+  },
+  {
+    "state_code": "ND",
+    "state_name": "North Dakota",
+    "state_fips": "38",
+    "country": "US",
+    "usda_plant_location_id": 3326
+  },
+  {
+    "state_code": "NE",
+    "state_name": "Nebraska",
+    "state_fips": "31",
+    "country": "US",
+    "usda_plant_location_id": 3319
+  },
+  {
+    "state_code": "NH",
+    "state_name": "New Hampshire",
+    "state_fips": "33",
+    "country": "US",
+    "usda_plant_location_id": 3321
+  },
+  {
+    "state_code": "NJ",
+    "state_name": "New Jersey",
+    "state_fips": "34",
+    "country": "US",
+    "usda_plant_location_id": 3322
+  },
+  {
+    "state_code": "NM",
+    "state_name": "New Mexico",
+    "state_fips": "35",
+    "country": "US",
+    "usda_plant_location_id": 3323
+  },
+  {
+    "state_code": "NV",
+    "state_name": "Nevada",
+    "state_fips": "32",
+    "country": "US",
+    "usda_plant_location_id": 3320
+  },
+  {
+    "state_code": "NY",
+    "state_name": "New York",
+    "state_fips": "36",
+    "country": "US",
+    "usda_plant_location_id": 3324
+  },
+  {
+    "state_code": "OH",
+    "state_name": "Ohio",
+    "state_fips": "39",
+    "country": "US",
+    "usda_plant_location_id": 3327
+  },
+  {
+    "state_code": "OK",
+    "state_name": "Oklahoma",
+    "state_fips": "40",
+    "country": "US",
+    "usda_plant_location_id": 3328
+  },
+  {
+    "state_code": "OR",
+    "state_name": "Oregon",
+    "state_fips": "41",
+    "country": "US",
+    "usda_plant_location_id": 3329
+  },
+  {
+    "state_code": "PA",
+    "state_name": "Pennsylvania",
+    "state_fips": "42",
+    "country": "US",
+    "usda_plant_location_id": 3330
+  },
+  {
+    "state_code": "PR",
+    "state_name": "Puerto Rico",
+    "state_fips": "72",
+    "country": "US",
+    "usda_plant_location_id": 3349
+  },
+  {
+    "state_code": "RI",
+    "state_name": "Rhode Island",
+    "state_fips": "44",
+    "country": "US",
+    "usda_plant_location_id": 3331
+  },
+  {
+    "state_code": "SC",
+    "state_name": "South Carolina",
+    "state_fips": "45",
+    "country": "US",
+    "usda_plant_location_id": 3332
+  },
+  {
+    "state_code": "SD",
+    "state_name": "South Dakota",
+    "state_fips": "46",
+    "country": "US",
+    "usda_plant_location_id": 3333
+  },
+  {
+    "state_code": "TN",
+    "state_name": "Tennessee",
+    "state_fips": "47",
+    "country": "US",
+    "usda_plant_location_id": 3334
+  },
+  {
+    "state_code": "TX",
+    "state_name": "Texas",
+    "state_fips": "48",
+    "country": "US",
+    "usda_plant_location_id": 3335
+  },
+  {
+    "state_code": "UT",
+    "state_name": "Utah",
+    "state_fips": "49",
+    "country": "US",
+    "usda_plant_location_id": 3336
+  },
+  {
+    "state_code": "VA",
+    "state_name": "Virginia",
+    "state_fips": "51",
+    "country": "US",
+    "usda_plant_location_id": 3338
+  },
+  {
+    "state_code": "VI",
+    "state_name": "Virgin Islands",
+    "state_fips": "78",
+    "country": "US",
+    "usda_plant_location_id": 3351
+  },
+  {
+    "state_code": "VT",
+    "state_name": "Vermont",
+    "state_fips": "50",
+    "country": "US",
+    "usda_plant_location_id": 3337
+  },
+  {
+    "state_code": "WA",
+    "state_name": "Washington",
+    "state_fips": "53",
+    "country": "US",
+    "usda_plant_location_id": 3339
+  },
+  {
+    "state_code": "WI",
+    "state_name": "Wisconsin",
+    "state_fips": "55",
+    "country": "US",
+    "usda_plant_location_id": 3341
+  },
+  {
+    "state_code": "WV",
+    "state_name": "West Virginia",
+    "state_fips": "54",
+    "country": "US",
+    "usda_plant_location_id": 3340
+  },
+  {
+    "state_code": "WY",
+    "state_name": "Wyoming",
+    "state_fips": "56",
+    "country": "US",
+    "usda_plant_location_id": 3342
+  }
+]

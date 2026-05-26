@@ -1,0 +1,184 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import SearchIsland from '@/components/SearchIsland.astro';
+import { api, type HealthResponse } from '@/lib/api';
+
+let health: HealthResponse | null = null;
+try { health = await api.health(); } catch { /* fine, render without it */ }
+
+// Featured species thumbnails — fetched in parallel, fail-soft.
+async function thumb(symbol: string): Promise<string | null> {
+  try {
+    const d = await api.plant(symbol);
+    // Prefer the larger (medium) photo; fall back to thumb. iNat URLs follow
+    // /photos/{id}/{size}.jpg where size ∈ {square,small,medium,large,original}.
+    // If we have neither, return null.
+    const raw = d.photo?.url ?? d.photo?.thumb_url ?? null;
+    return raw ? raw.replace('/square.', '/medium.').replace('/small.', '/medium.') : null;
+  } catch {
+    return null;
+  }
+}
+const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
+  thumb('LERE7'),
+  thumb('ALRO3'),
+  thumb('ACGR3'),
+]);
+---
+
+<BaseLayout
+  title="rootfast — native plants of the United States, queryable"
+  description="A free, public-domain plant API and the website that browses it. Built from USDA PLANTS, USDA hardiness zones, iNaturalist photos, and the GBIF taxonomic backbone. 27,665 taxa across 54 states and territories."
+>
+  <!-- Hero — restrained editorial, no marketing fluff -->
+  <section class="max-w-content mx-auto px-6 lg:px-10 pt-16 sm:pt-24 pb-14">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-16 items-start">
+      <div class="lg:col-span-7">
+        <p class="label flex items-baseline gap-3">
+          <span aria-hidden="true">⚘</span>
+          <span>Vol. 1 · United States · nationwide</span>
+        </p>
+        <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-[1.02] tracking-tight text-ink">
+          A digital herbarium.
+        </h1>
+        <p class="mt-7 max-w-prose font-serif text-xl leading-relaxed text-ink-2">
+          Rootfast joins USDA PLANTS distribution data, hardiness zones, iNaturalist photos,
+          and the GBIF taxonomic backbone into a single queryable surface. Every record
+          traces back to a federal or open dataset; nothing is invented. Look up a plant.
+          Look up a county. Read the data plainly.
+        </p>
+
+        <div class="mt-10 flex flex-wrap items-center gap-4">
+          <a href="/states" class="btn btn-native">Browse by state</a>
+          <a href="/search" class="btn">Search the catalogue</a>
+          <a href="/docs" class="btn">Read the API</a>
+        </div>
+      </div>
+
+      <aside class="lg:col-span-5 lg:pl-10 lg:border-l lg:border-rule">
+        <p class="label">Status of the work</p>
+        <ul class="mt-4 space-y-3 text-sm text-ink-2 leading-relaxed">
+          <li class="flex items-baseline gap-3">
+            <span class="text-native shrink-0">●</span>
+            <span><span class="text-ink font-medium">United States — live.</span> 55 of 56 states and territories. Browse <a href="/states" class="link-hover text-ink">by state</a>, drill into counties, read full taxon records with GBIF and iNaturalist linkage.</span>
+          </li>
+          <li class="flex items-baseline gap-3">
+            <span class="text-native shrink-0">●</span>
+            <span><span class="text-ink font-medium">USDA hardiness zones — live.</span> 40,502 ZIPs and 3,199 counties mapped to the 2023 PHZM.</span>
+          </li>
+          <li class="flex items-baseline gap-3">
+            <span class="text-ink-3 shrink-0">◐</span>
+            <span><span class="text-ink font-medium">Connecticut — pending.</span> Awaiting USDA republish following CT's 2022 abolition of counties.</span>
+          </li>
+        </ul>
+
+        {health && (
+          <p class="mt-6 mono text-xs text-ink-3">
+            api healthy · v{health.dataset_version} · schema {health.schema_version}
+          </p>
+        )}
+      </aside>
+    </div>
+  </section>
+
+  <hr class="rule-strong max-w-content mx-auto" />
+
+  <!-- Search prompt -->
+  <section class="max-w-content mx-auto px-6 lg:px-10 py-16">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-12">
+      <div class="lg:col-span-4">
+        <p class="label flex items-baseline gap-3"><span>§1</span><span>Begin a search</span></p>
+        <h2 class="mt-3 font-serif text-3xl text-ink leading-tight">
+          What grows where you stand?
+        </h2>
+        <p class="mt-4 font-serif text-lg italic text-ink-2 leading-relaxed">
+          Look up a plant by Latin or vernacular name, or open a county directly.
+        </p>
+      </div>
+
+      <div class="lg:col-span-8">
+        <SearchIsland />
+      </div>
+    </div>
+  </section>
+
+  <span class="asterism"></span>
+
+  <!-- Examples — these are real URLs in the live API -->
+  <section class="max-w-content mx-auto px-6 lg:px-10 py-10 pb-20">
+    <p class="label flex items-baseline gap-3"><span>§2</span><span>Try a known taxon</span></p>
+
+    <div class="mt-6">
+      <div class="flex items-baseline gap-3 mb-2">
+        <p class="label">Species</p>
+        <span class="flex-1 border-t border-rule h-0 self-center"></span>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-px bg-rule border border-rule">
+        <a href="/plants/LERE7" class="group block bg-paper hover:bg-surface transition-colors">
+          {lere7Photo ? (
+            <img src={lere7Photo} alt="" loading="lazy"
+                 class="block w-full aspect-[4/3] object-cover border-b border-rule" />
+          ) : (
+            <div class="block w-full aspect-[4/3] bg-surface flex items-center justify-center text-ink-3 border-b border-rule" aria-hidden="true">⚘</div>
+          )}
+          <div class="p-6">
+            <p class="font-serif text-xl leading-tight"><i class="sci">Lewisia rediviva</i></p>
+            <p class="mt-1 font-sans text-sm text-ink-2">bitterroot · state flower of MT</p>
+            <p class="mt-4 text-xs text-ink-3 mono">LERE7 · 133 counties</p>
+            <p class="mt-6 text-xs label group-hover:text-native transition-colors">Open record ↗</p>
+          </div>
+        </a>
+
+        <a href="/plants/ALRO3" class="group block bg-paper hover:bg-surface transition-colors">
+          {alro3Photo ? (
+            <img src={alro3Photo} alt="" loading="lazy"
+                 class="block w-full aspect-[4/3] object-cover border-b border-rule" />
+          ) : (
+            <div class="block w-full aspect-[4/3] bg-surface flex items-center justify-center text-ink-3 border-b border-rule" aria-hidden="true">⚘</div>
+          )}
+          <div class="p-6">
+            <p class="font-serif text-xl leading-tight"><i class="sci">Alcea rosea</i></p>
+            <p class="mt-1 font-sans text-sm text-ink-2">hollyhock · Malvaceae</p>
+            <p class="mt-4 text-xs text-ink-3 mono">ALRO3 · 220 counties</p>
+            <p class="mt-6 text-xs label group-hover:text-native transition-colors">Open record ↗</p>
+          </div>
+        </a>
+
+        <a href="/plants/ACGR3" class="group block bg-paper hover:bg-surface transition-colors">
+          {acgr3Photo ? (
+            <img src={acgr3Photo} alt="" loading="lazy"
+                 class="block w-full aspect-[4/3] object-cover border-b border-rule" />
+          ) : (
+            <div class="block w-full aspect-[4/3] bg-surface flex items-center justify-center text-ink-3 border-b border-rule" aria-hidden="true">⚘</div>
+          )}
+          <div class="p-6">
+            <p class="font-serif text-xl leading-tight"><i class="sci">Acer grandidentatum</i></p>
+            <p class="mt-1 font-sans text-sm text-ink-2">bigtooth maple · Aceraceae</p>
+            <p class="mt-4 text-xs text-ink-3 mono">ACGR3 · 71 counties</p>
+            <p class="mt-6 text-xs label group-hover:text-native transition-colors">Open record ↗</p>
+          </div>
+        </a>
+      </div>
+
+      <div class="flex items-baseline gap-3 mt-8 mb-2">
+        <p class="label">Locations</p>
+        <span class="flex-1 border-t border-rule h-0 self-center"></span>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-px bg-rule border border-rule">
+        <a href="/montana/gallatin" class="group block bg-paper p-6 hover:bg-surface transition-colors">
+          <p class="font-serif text-xl leading-tight">Gallatin Co., MT</p>
+          <p class="mt-1 font-sans text-sm text-ink-2">montane, Yellowstone plateau</p>
+          <p class="mt-4 text-xs text-ink-3 mono">FIPS 30031 · 1,362 taxa</p>
+          <p class="mt-6 text-xs label group-hover:text-native transition-colors">Open listing ↗</p>
+        </a>
+
+        <a href="/montana" class="group block bg-paper p-6 hover:bg-surface transition-colors">
+          <p class="font-serif text-xl leading-tight">Montana</p>
+          <p class="mt-1 font-sans text-sm text-ink-2">Mountain West, 56 counties</p>
+          <p class="mt-4 text-xs text-ink-3 mono">MT · 3,215 taxa</p>
+          <p class="mt-6 text-xs label group-hover:text-native transition-colors">Open state ↗</p>
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

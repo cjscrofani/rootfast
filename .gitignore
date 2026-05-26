@@ -1,0 +1,68 @@
+# ---------------------------------------------------------------------------
+# OS + editor + agent state
+# ---------------------------------------------------------------------------
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.claude/
+
+# ---------------------------------------------------------------------------
+# Python (ETL pipelines under sources/*/etl/)
+# ---------------------------------------------------------------------------
+.venv/
+.python-version
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Node (api/, web/)
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+.astro/
+*.log
+
+# ---------------------------------------------------------------------------
+# Cloudflare wrangler local state
+# ---------------------------------------------------------------------------
+.wrangler/
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.dev.vars
+
+# ---------------------------------------------------------------------------
+# Fetched + derived data (regenerable — see sources/*/README.md)
+#
+# Every byte under these paths can be rebuilt from upstream USDA / iNat /
+# GBIF / PHZM. We commit small reference seeds (states.json, state_polygons.json)
+# and ETL scripts; everything else stays out of the repo.
+# ---------------------------------------------------------------------------
+
+# USDA Plants ETL — ignore raw/ wholesale; whitelist small reference seeds.
+sources/usda-plants/etl/raw/**
+!sources/usda-plants/etl/raw/states.json
+!sources/usda-plants/etl/raw/state_polygons.json
+!sources/usda-plants/etl/raw/mt_counties.json
+!sources/usda-plants/etl/raw/mt_polygon.json
+sources/usda-plants/etl/processed/
+
+# USDA Hardiness ETL — ignore raw/ wholesale (no reference seeds yet)
+sources/usda-hardiness/etl/raw/**
+sources/usda-hardiness/etl/processed/
+
+# Unified API artefacts (chunks, .db, .sql dumps)
+api/processed/
+
+# Experimental sidelined work — keep code, drop caches
+experimental/montana/field_guide/raw/

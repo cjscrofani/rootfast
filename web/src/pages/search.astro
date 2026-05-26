@@ -1,0 +1,27 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import SearchIsland from '@/components/SearchIsland.astro';
+
+const url = new URL(Astro.request.url);
+const initial = url.searchParams.get('q') ?? '';
+---
+
+<BaseLayout title="Search — rootfast" description="Locate a taxon by scientific or common name.">
+  <section class="max-w-content mx-auto px-6 lg:px-10 pt-12 pb-6">
+    <p class="label flex items-baseline gap-3"><span>§1</span><span>Search the catalogue</span></p>
+    <h1 class="mt-5 font-serif text-4xl sm:text-5xl text-ink leading-none tracking-tight">
+      Locate a taxon.
+    </h1>
+    <p class="mt-4 font-serif text-xl italic text-ink-2 max-w-prose">
+      Live full-text search over scientific names, common names, families, and genera.
+      Results stream as you type.
+    </p>
+  </section>
+
+  <hr class="rule-strong max-w-content mx-auto" />
+
+  <section class="max-w-content mx-auto px-6 lg:px-10 py-10">
+    <SearchIsland autofocus initialQuery={initial} placeholder="Try: ponderosa, Pulsatilla, monkshood, Pinus, milkvetch…" />
+  </section>
+
+</BaseLayout>

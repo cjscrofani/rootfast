@@ -1,0 +1,57 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { EXPLORE_CATEGORIES } from '@/lib/explore';
+---
+
+<BaseLayout
+  title="Explore — rootfast"
+  description="Curated thematic lists of plants: by commercial availability, range, bloom time, flower color, mature height."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <span class="text-ink-2">Explore</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Thematic lists</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        Explore
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Hand-curated slices of the catalogue. Each list is a saved query — open
+        one to see the matching plants, filterable and sortable like any other
+        listing.
+      </p>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <section class="py-7 space-y-12">
+      {EXPLORE_CATEGORIES.map((cat, i) => (
+        <div>
+          <div class="flex items-baseline justify-between gap-4 mb-3">
+            <p class="label flex items-baseline gap-3"><span>§{i + 1}</span><span>{cat.label}</span></p>
+            <span class="label text-ink-3">{cat.lists.length} {cat.lists.length === 1 ? 'list' : 'lists'}</span>
+          </div>
+          <p class="mb-5 max-w-prose text-sm text-ink-2 italic leading-relaxed">{cat.intro}</p>
+
+          <ul class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-rule border border-rule">
+            {cat.lists.map(list => (
+              <li>
+                <a href={`/explore/${list.slug}`}
+                   class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                  <p class="font-serif text-lg text-ink leading-tight">{list.label}</p>
+                  <p class="mt-2 text-sm text-ink-2 leading-relaxed">{list.short}</p>
+                  <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open list ↗</p>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
+  </article>
+</BaseLayout>

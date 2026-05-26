@@ -1,0 +1,244 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, ApiError, type CountyPlantsResponse, type StateCountiesResponse } from '@/lib/api';
+import {
+  stateCodeOfSlug, stateNameOf, stateSlugOf, slugifyCounty,
+} from '@/lib/states';
+
+const { state_slug, county_slug } = Astro.params;
+if (!state_slug || !county_slug) {
+  return new Response('state and county slug required', { status: 400 });
+}
+
+const code = stateCodeOfSlug(state_slug);
+if (!code) {
+  return new Response(`Unknown state "${state_slug}"`, { status: 404 });
+}
+
+// Canonicalize state slug.
+const canonicalStateSlug = stateSlugOf(code);
+if (state_slug !== canonicalStateSlug) {
+  return Astro.redirect(`/${canonicalStateSlug}/${county_slug}`, 301);
+}
+
+// Resolve the county slug → FIPS by listing the state's counties.
+let countiesData: StateCountiesResponse;
+try {
+  countiesData = await api.stateCounties(code);
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    return new Response(`Unknown state "${code}"`, { status: 404 });
+  }
+  throw err;
+}
+
+const slugCounts = new Map<string, number>();
+const indexed = countiesData.counties.map(c => {
+  let slug = slugifyCounty(c.county_name);
+  const n = (slugCounts.get(slug) ?? 0) + 1;
+  slugCounts.set(slug, n);
+  if (n > 1) slug = `${slug}-${n}`;
+  return { ...c, slug };
+});
+const match = indexed.find(c => c.slug === county_slug.toLowerCase());
+if (!match) {
+  return new Response(`No county "${county_slug}" in ${stateNameOf(code)}`, { status: 404 });
+}
+
+// URL params for server-side pagination + filtering.
+const PAGE_SIZE = 50;
+const urlParams = Astro.url.searchParams;
+
+const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
+const page    = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
+const offset  = (page - 1) * PAGE_SIZE;
+
+const VALID_NATIVITY = new Set(['Native', 'Introduced', 'Both']);
+const rawNativity    = urlParams.get('nativity') ?? '';
+const nativity       = VALID_NATIVITY.has(rawNativity) ? rawNativity : null;
+
+const VALID_SORT = new Set(['sci', 'common']);
+const rawSort    = urlParams.get('sort') ?? 'sci';
+const sort       = VALID_SORT.has(rawSort) ? rawSort : 'sci';
+
+let data: CountyPlantsResponse;
+let totalUnfilteredCount = 0;
+try {
+  // Two parallel calls: the filtered page for the listing, and an unfiltered
+  // count for the header. Both round-trip through the same edge cache so
+  // repeat loads stay cheap.
+  const [pageData, headerCount] = await Promise.all([
+    api.county(match.county_fips, {
+      limit:    PAGE_SIZE,
+      offset,
+      nativity: nativity ?? undefined,
+      sort,
+    }),
+    api.county(match.county_fips, { limit: 1, offset: 0 }),
+  ]);
+  data = pageData;
+  totalUnfilteredCount = (headerCount as any).total ?? headerCount.count ?? 0;
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    return new Response(`No plants for county "${match.county_fips}"`, { status: 404 });
+  }
+  throw err;
+}
+
+const { county, plants } = data;
+const stateName = stateNameOf(county.state_code);
+
+// Pagination math.
+const totalUnderFilter = (data as any).total ?? plants.length;
+const totalPages       = Math.max(1, Math.ceil(totalUnderFilter / PAGE_SIZE));
+const clampedPage      = Math.min(page, totalPages);
+const showingFrom      = totalUnderFilter === 0 ? 0 : offset + 1;
+const showingTo        = Math.min(offset + PAGE_SIZE, totalUnderFilter);
+
+function qs(overrides: Record<string, string | null>): string {
+  const next = new URLSearchParams();
+  if (nativity) next.set('nativity', nativity);
+  if (sort !== 'sci') next.set('sort', sort);
+  if (clampedPage > 1) next.set('page', String(clampedPage));
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null) next.delete(k);
+    else            next.set(k, v);
+  }
+  const s = next.toString();
+  return s ? `?${s}` : '';
+}
+
+const title = `${county.county_name} County, ${stateName} — rootfast`;
+---
+
+<BaseLayout title={title}>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/" class="link-hover">Index</a>
+      <span class="mx-2">/</span>
+      <a href="/states" class="link-hover">States</a>
+      <span class="mx-2">/</span>
+      <a href={`/${canonicalStateSlug}`} class="link-hover text-ink-2">{stateName}</a>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">{county.county_name}</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span>§1</span><span>County listing</span>
+        <span class="text-ink-3 font-normal normal-case tracking-normal italic">
+          &mdash; {stateName}
+        </span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        {county.county_name} County
+      </h1>
+      <p class="mt-4 font-serif text-xl italic text-ink-2">
+        {stateName}
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">FIPS</dt>
+          <dd class="mt-1 mono">{county.county_fips}</dd>
+        </div>
+        <div>
+          <dt class="label">Taxa recorded</dt>
+          <dd class="mt-1 mono">{totalUnfilteredCount.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">State</dt>
+          <dd class="mt-1 mono">
+            <a href={`/${canonicalStateSlug}`} class="link-hover">{stateName}</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <section class="py-7" id="plants">
+      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-5">
+        <div>
+          <p class="label">Filter</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filter by nativity">
+            <a class={`pill ${nativity === null ? 'rf-active' : ''}`}      href={qs({ nativity: null, page: null })}>All</a>
+            <a class={`pill pill-native ${nativity === 'Native' ? 'rf-active' : ''}`}     href={qs({ nativity: 'Native',     page: null })}>Native</a>
+            <a class={`pill pill-introduced ${nativity === 'Introduced' ? 'rf-active' : ''}`} href={qs({ nativity: 'Introduced', page: null })}>Introduced</a>
+            <a class={`pill pill-both ${nativity === 'Both' ? 'rf-active' : ''}`}       href={qs({ nativity: 'Both',       page: null })}>Both</a>
+          </div>
+        </div>
+
+        <form method="get" class="flex items-center gap-3">
+          {nativity && <input type="hidden" name="nativity" value={nativity} />}
+          <label for="rf-sort" class="label">Sort by</label>
+          <select id="rf-sort" name="sort" onchange="this.form.submit()"
+                  class="font-sans text-sm bg-paper border-b border-rule-strong py-1 px-0 focus:outline-none focus:border-native">
+            <option value="sci"    selected={sort === 'sci'}>Scientific name</option>
+            <option value="common" selected={sort === 'common'}>Common name</option>
+          </select>
+        </form>
+      </div>
+
+      <p class="mt-5 text-sm text-ink-3 italic">
+        Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
+        of <span class="text-ink-2">{totalUnderFilter.toLocaleString('en-US')}</span>{nativity && <> {' '}<span class="text-ink-3">({nativity.toLowerCase()})</span></>}.
+      </p>
+
+      <ul class="mt-2 divide-y divide-rule">
+        {plants.map(p => {
+          const cls = p.nativity === 'Native' ? 'pill-native'
+                    : p.nativity === 'Introduced' ? 'pill-introduced'
+                    : 'pill-both';
+          return (
+            <li>
+              <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
+                 class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+                {p.photo_thumb_url ? (
+                  <img src={p.photo_thumb_url} alt="" loading="lazy"
+                       class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
+                ) : (
+                  <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
+                )}
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-baseline justify-between gap-4">
+                    <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
+                    <span class="shrink-0 flex items-baseline gap-3">
+                      <span class={`pill ${cls}`}>{p.nativity}</span>
+                      <span class="mono text-xs text-ink-3">{p.usda_symbol}</span>
+                    </span>
+                  </div>
+                  <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                    {p.common_name && <span>{p.common_name}</span>}
+                    {p.common_name && p.family && <span class="text-ink-3">·</span>}
+                    {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
+                  </div>
+                </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+
+      {totalPages > 1 && (
+        <nav class="mt-6 flex items-center justify-between gap-4 text-sm" aria-label="Catalogue pagination">
+          {clampedPage > 1
+            ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
+            : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
+          <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
+          {clampedPage < totalPages
+            ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
+            : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
+        </nav>
+      )}
+    </section>
+  </article>
+
+  <style is:global>
+    a.pill.rf-active { box-shadow: inset 0 -2px 0 currentColor; transform: translateY(-1px); }
+    a.pill { text-decoration: none; }
+    span.pill.rf-disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</BaseLayout>

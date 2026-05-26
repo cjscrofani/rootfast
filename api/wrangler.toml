@@ -1,0 +1,60 @@
+name = "rootfast-api"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+# Keep the workers.dev fallback URL alive — useful as a stable
+# immutable identifier and as a fallback during DNS/SSL transitions.
+workers_dev = true
+
+# Custom domain — provisioned via Cloudflare dashboard (Workers → rootfast-api
+# → Settings → Triggers → Custom Domains). Declared here so a future deploy
+# can't silently drop it; the `custom_domain = true` flag tells wrangler this
+# is a managed subdomain (not a pattern-based route) on the rootfast.org zone.
+[[routes]]
+pattern        = "api.rootfast.org"
+custom_domain  = true
+
+# Cloudflare D1 binding. Create the database once via:
+#     wrangler d1 create rootfast
+# then paste the database_id below.
+#
+# Apply schema migrations from api/schema/ via:
+#     wrangler d1 migrations apply rootfast
+[[d1_databases]]
+binding        = "DB"
+database_name  = "rootfast"
+database_id    = "bd850648-4b8f-4af7-8a73-e0a9a3c3b830"
+migrations_dir = "schema"
+
+[vars]
+DATASET_VERSION = "0.0.1"
+
+# --- Rate limiting (per-client-IP) -----------------------------------------
+# Three Cloudflare-native rate-limit bindings, keyed by request IP. The 60s
+# period is the only valid window for the simple ratelimit binding alongside
+# the 10s window.
+#
+#   default — every /v1/* route that isn't covered by a more specific limiter
+#   bulk    — `?format=csv` or `?format=ndjson` exports; small budget
+#   search  — /v1/search and POST /v1/plants/search; FTS5 / filter queries
+#
+# Health-check, /v1/openapi.json, /v1/docs are intentionally NOT rate limited:
+# they're cheap, edge-cached, and frequently polled.
+
+[[unsafe.bindings]]
+name = "RATELIMIT_DEFAULT"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 120, period = 60 }
+
+[[unsafe.bindings]]
+name = "RATELIMIT_BULK"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 5, period = 60 }
+
+[[unsafe.bindings]]
+name = "RATELIMIT_SEARCH"
+type = "ratelimit"
+namespace_id = "1003"
+simple = { limit = 60, period = 60 }

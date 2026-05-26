@@ -1,0 +1,276 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import PlantNameBlock from '@/components/PlantNameBlock.astro';
+import PlantPhoto from '@/components/PlantPhoto.astro';
+import CharacteristicsGrid from '@/components/CharacteristicsGrid.astro';
+import DistributionMap from '@/components/DistributionMap.astro';
+import { api, ApiError, type PlantDetail } from '@/lib/api';
+import { stateSlugOf, stateNameOf, slugifyCounty } from '@/lib/states';
+
+const { symbol } = Astro.params;
+if (!symbol) {
+  return new Response('symbol required', { status: 400 });
+}
+
+let detail: PlantDetail;
+try {
+  detail = await api.plant(symbol);
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    return new Response(`No plant with USDA symbol "${symbol}"`, { status: 404 });
+  }
+  throw err;
+}
+
+const { plant, photo, growth_habits, durations, native_status, characteristics, counties } = detail;
+
+// Region code → friendly label
+const REGION_NAME: Record<string, string> = {
+  AK: 'Alaska', CAN: 'Canada', GL: 'Greenland', HI: 'Hawaii',
+  L48: 'Lower 48 States', NAV: 'Navassa Island',
+  PB: 'Pacific Basin (except Hawaii)', PR: 'Puerto Rico',
+  SPM: 'St. Pierre & Miquelon', VI: 'U.S. Virgin Islands',
+};
+
+// Tally across the whole country
+const tally = {
+  Native:     counties.filter(c => c.nativity === 'Native').length,
+  Introduced: counties.filter(c => c.nativity === 'Introduced').length,
+  Both:       counties.filter(c => c.nativity === 'Both').length,
+};
+
+// Group counties by state for the detailed listing under the map.
+type StateGroup = {
+  state_code: string;
+  state_name: string;
+  counts: { Native: number; Introduced: number; Both: number };
+  rows: typeof counties;
+};
+const byState: Record<string, StateGroup> = {};
+for (const c of counties) {
+  const sc = c.state_code;
+  if (!byState[sc]) {
+    byState[sc] = {
+      state_code: sc,
+      state_name: stateNameOf(sc),
+      counts: { Native: 0, Introduced: 0, Both: 0 },
+      rows: [],
+    };
+  }
+  byState[sc].counts[c.nativity] += 1;
+  byState[sc].rows.push(c);
+}
+const stateGroups = Object.values(byState)
+  .map(g => ({ ...g, rows: g.rows.slice().sort((a, b) => a.county_name.localeCompare(b.county_name)) }))
+  .sort((a, b) => a.state_name.localeCompare(b.state_name));
+
+const pageTitle = `${plant.scientific_name_canonical} — rootfast`;
+const desc = plant.common_name
+  ? `${plant.common_name} (${plant.scientific_name_canonical}) — distribution, cultivation, and identity in the rootfast catalogue.`
+  : `${plant.scientific_name_canonical} — distribution, cultivation, and identity in the rootfast catalogue.`;
+---
+
+<BaseLayout title={pageTitle} description={desc}>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <!-- Breadcrumb -->
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/" class="link-hover">Index</a>
+      <span class="mx-2">/</span>
+      <a href="/search" class="link-hover">Search</a>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">{plant.scientific_name_canonical}</span>
+    </p>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-x-12 gap-y-6 items-start">
+      <div class="lg:col-span-7 order-2 lg:order-1">
+        <PlantNameBlock plant={plant} />
+      </div>
+      <div class="lg:col-span-5 order-1 lg:order-2 lg:pt-12">
+        <PlantPhoto photo={photo} scientificName={plant.scientific_name_canonical} commonName={plant.common_name} />
+      </div>
+    </div>
+
+    <hr class="rule-strong" />
+
+    <!-- Quick facts grid: growth habit, duration, taxonomic group -->
+    <section aria-labelledby="quick-h" class="py-10">
+      <p class="label flex items-baseline gap-3"><span>§2</span><span>Habit & range</span></p>
+      <h2 id="quick-h" class="sr-only">Habit and range</h2>
+
+      <div class="mt-5 grid grid-cols-1 lg:grid-cols-12 gap-x-12 gap-y-8">
+        <!-- Quick attributes -->
+        <div class="lg:col-span-5">
+          <dl class="field-grid">
+            {growth_habits.length > 0 && (<>
+              <dt>Growth habit</dt>
+              <dd>{growth_habits.join(', ')}</dd>
+            </>)}
+            {durations.length > 0 && (<>
+              <dt>Duration</dt>
+              <dd>{durations.join(', ')}</dd>
+            </>)}
+            {plant.taxonomic_group && (<>
+              <dt>Group</dt>
+              <dd>{plant.taxonomic_group}</dd>
+            </>)}
+            {plant.family && (<>
+              <dt>Family</dt>
+              <dd class="sci">{plant.family}</dd>
+            </>)}
+            {plant.genus && (<>
+              <dt>Genus</dt>
+              <dd class="sci">{plant.genus}</dd>
+            </>)}
+          </dl>
+        </div>
+
+        <!-- Native status by region -->
+        <div class="lg:col-span-7">
+          <div class="flex items-baseline gap-3 mb-3">
+            <span class="section-num">§2a</span>
+            <h3 class="font-sans text-xs font-bold tracking-smallcaps uppercase text-ink">Native status, by region</h3>
+            <span class="flex-1 border-t border-rule h-0 self-center"></span>
+          </div>
+          {native_status.length === 0 ? (
+            <p class="font-serif italic text-ink-3">No regional status recorded.</p>
+          ) : (
+            <ul class="space-y-2">
+              {native_status.map(ns => {
+                const cls = ns.status === 'Native' ? 'pill-native'
+                          : ns.status === 'Introduced' ? 'pill-introduced'
+                          : 'pill-both';
+                return (
+                  <li class="flex items-baseline justify-between gap-4 py-1.5 border-b border-rule">
+                    <span>
+                      <span class="mono text-xs text-ink-3 mr-2">{ns.region_code}</span>
+                      <span class="text-ink-2">{REGION_NAME[ns.region_code] ?? ns.region_code}</span>
+                    </span>
+                    <span class={`pill ${cls}`}>{ns.status}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {counties.length > 0 && (
+        <div class="mt-10">
+          <div class="flex items-baseline gap-3 mb-3">
+            <span class="section-num">§2b</span>
+            <h3 class="font-sans text-xs font-bold tracking-smallcaps uppercase text-ink">County-level range</h3>
+            <span class="text-xs text-ink-3 italic">
+              · {counties.length.toLocaleString('en-US')} {counties.length === 1 ? 'county' : 'counties'}
+              across {stateGroups.length} {stateGroups.length === 1 ? 'state' : 'states/territories'}
+            </span>
+            <span class="flex-1 border-t border-rule h-0 self-center"></span>
+          </div>
+          <DistributionMap counties={counties} tally={tally} />
+        </div>
+      )}
+    </section>
+
+    <hr class="rule-strong" />
+
+    <!-- Characteristics (USDA Plant Materials) -->
+    <CharacteristicsGrid chars={characteristics} />
+
+    <hr class="rule-strong" />
+
+    <!-- Per-state county listings -->
+    <section aria-labelledby="counties-h" class="py-10">
+      <p class="label flex items-baseline gap-3">
+        <span>§4</span><span>Counties, by state</span>
+      </p>
+      <h2 id="counties-h" class="font-serif text-2xl mt-3 text-ink">
+        {counties.length === 0 ? (
+          <>No county-level records.</>
+        ) : (
+          <>
+            Recorded in <span class="text-ink">{counties.length.toLocaleString('en-US')}</span> {counties.length === 1 ? 'county' : 'counties'}
+            across <span class="text-ink">{stateGroups.length}</span> {stateGroups.length === 1 ? 'state' : 'states/territories'}.
+          </>
+        )}
+      </h2>
+
+      {counties.length > 0 && (
+        <>
+          <div class="mt-7 space-y-6" data-county-details>
+            {stateGroups.map(g => {
+              const total = g.counts.Native + g.counts.Introduced + g.counts.Both;
+              return (
+                <details class="group">
+                  <summary class="flex items-baseline justify-between gap-3 py-2 cursor-pointer list-none border-b border-rule hover:border-rule-strong transition-colors">
+                    <span class="flex items-baseline gap-3">
+                      <span class="font-serif text-lg text-ink">{g.state_name}</span>
+                      <a href={`/${stateSlugOf(g.state_code)}`} class="label link-hover text-ink-3"
+                         onclick="event.stopPropagation();">view state ↗</a>
+                    </span>
+                    <span class="flex items-baseline gap-2 text-sm text-ink-3">
+                      {g.counts.Native > 0     && <span class="pill pill-native">{g.counts.Native} N</span>}
+                      {g.counts.Introduced > 0 && <span class="pill pill-introduced">{g.counts.Introduced} I</span>}
+                      {g.counts.Both > 0       && <span class="pill pill-both">{g.counts.Both} B</span>}
+                      <span class="mono text-xs text-ink-3 ml-2 group-open:rotate-180 transition-transform inline-block">▾</span>
+                    </span>
+                  </summary>
+                  <ul class="mt-3 mb-5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-1 text-sm">
+                    {g.rows.map(c => {
+                      const cls = c.nativity === 'Native' ? 'text-native'
+                                : c.nativity === 'Introduced' ? 'text-introduced'
+                                : 'text-ink-2';
+                      const dot = c.nativity === 'Native' ? '●'
+                                : c.nativity === 'Introduced' ? '◆'
+                                : '◐';
+                      return (
+                        <li>
+                          <a href={`/${stateSlugOf(c.state_code)}/${slugifyCounty(c.county_name)}`} class="link-hover">
+                            <span class={`mr-1.5 ${cls}`} aria-hidden="true">{dot}</span>
+                            {c.county_name}
+                            <span class="mono text-xs text-ink-3 ml-1.5">{c.county_fips}</span>
+                          </a>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </details>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </section>
+
+    <hr class="rule" />
+
+    <!-- Provenance footer -->
+    <section class="py-10 pb-16">
+      <p class="label flex items-baseline gap-3"><span>§5</span><span>Sources & provenance</span></p>
+      <div class="mt-5 grid grid-cols-1 md:grid-cols-3 gap-6 text-sm text-ink-2">
+        <div>
+          <p class="font-serif text-base text-ink">USDA PLANTS</p>
+          <p class="mt-1">Symbol, taxonomy, distribution, cultivation specs, native status. Public domain.</p>
+          <a class="link-hover text-ink mono text-xs mt-2 inline-block"
+             href={`https://plants.usda.gov/plant-profile/${plant.usda_symbol}`}
+             target="_blank" rel="noreferrer">plants.usda.gov/{plant.usda_symbol} ↗</a>
+        </div>
+        <div>
+          <p class="font-serif text-base text-ink">GBIF Backbone</p>
+          <p class="mt-1">Canonical taxonomic identity, synonym resolution, cross-refs. CC0.</p>
+          {plant.gbif_taxon_key ? (
+            <a class="link-hover text-ink mono text-xs mt-2 inline-block"
+               href={`https://www.gbif.org/species/${plant.gbif_taxon_key}`}
+               target="_blank" rel="noreferrer">gbif.org/species/{plant.gbif_taxon_key} ↗</a>
+          ) : (
+            <p class="mt-2 text-xs text-ink-3 italic">no match</p>
+          )}
+        </div>
+        <div>
+          <p class="font-serif text-base text-ink">Record version</p>
+          <p class="mt-1">Cached and built locally. Source version on this record:</p>
+          <p class="mt-2 mono text-xs">{plant.source_version}</p>
+          <p class="mono text-xs text-ink-3">fetched {plant.fetched_at}</p>
+        </div>
+      </div>
+    </section>
+  </article>
+</BaseLayout>

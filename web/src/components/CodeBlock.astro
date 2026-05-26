@@ -1,0 +1,113 @@
+---
+/* A code block with a copy button.
+   Used in the API docs and anywhere we show runnable curl / JSON examples.
+   Styling matches the herbarium aesthetic — small-caps "COPY" / "COPIED",
+   hairline border, no flashy animation. */
+
+export interface Props {
+  /** The text to render and copy when the button is clicked. */
+  code: string;
+  /** Optional small-caps label rendered above the block. */
+  label?: string;
+}
+const { code, label } = Astro.props;
+---
+
+<div class="rf-cb">
+  <div class="rf-cb-head">
+    {label && <p class="label">{label}</p>}
+    <button class="rf-cb-copy" type="button" data-copy aria-label="Copy code to clipboard">
+      <span class="rf-cb-copy-default">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="4.25" y="4.25" width="8" height="9" fill="none" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M6 2.5h6.25a1.25 1.25 0 0 1 1.25 1.25V10.5" fill="none" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        <span>COPY</span>
+      </span>
+      <span class="rf-cb-copy-done">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>COPIED</span>
+      </span>
+    </button>
+  </div>
+  <pre class="code-block !p-0 !bg-transparent !border-0" data-code>{code}</pre>
+</div>
+
+<style>
+  .rf-cb { position: relative; }
+  .rf-cb-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    min-height: 1.2rem;
+  }
+  .rf-cb-head .label { margin: 0; }
+
+  .rf-cb-copy {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: 'Atkinson Hyperlegible', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    color: var(--rf-ink-3);
+    background: var(--rf-paper);
+    border: 1px solid var(--rf-rule-strong);
+    padding: 0.3rem 0.55rem;
+    cursor: pointer;
+    transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+    line-height: 1;
+  }
+  .rf-cb-copy svg { width: 11px; height: 11px; display: block; }
+  .rf-cb-copy:hover {
+    color: var(--rf-ink);
+    border-color: var(--rf-ink);
+  }
+  .rf-cb-copy:active { background: var(--rf-surface); }
+  .rf-cb-copy:focus-visible { outline-offset: 2px; }
+
+  .rf-cb-copy-default, .rf-cb-copy-done {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .rf-cb-copy-done { display: none; color: var(--rf-native); }
+  .rf-cb-copy.is-copied { color: var(--rf-native); border-color: var(--rf-native); }
+  .rf-cb-copy.is-copied .rf-cb-copy-default { display: none; }
+  .rf-cb-copy.is-copied .rf-cb-copy-done    { display: inline-flex; }
+</style>
+
+<script>
+  // Site-wide single handler for any rendered <CodeBlock>. Event delegation
+  // means we only attach once even if many code blocks exist on a page.
+  if (!(window as any).__rfCodeCopyBound) {
+    (window as any).__rfCodeCopyBound = true;
+    document.addEventListener('click', async (ev) => {
+      const btn = (ev.target as HTMLElement | null)?.closest<HTMLButtonElement>('[data-copy]');
+      if (!btn) return;
+      const wrap = btn.closest('.rf-cb');
+      const pre  = wrap?.querySelector<HTMLElement>('[data-code]');
+      if (!pre) return;
+      const text = pre.innerText;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // Fallback for older browsers / non-secure contexts
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(pre);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        try { document.execCommand('copy'); } catch {}
+        sel?.removeAllRanges();
+      }
+      btn.classList.add('is-copied');
+      window.setTimeout(() => btn.classList.remove('is-copied'), 1500);
+    });
+  }
+</script>

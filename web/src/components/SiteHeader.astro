@@ -1,0 +1,44 @@
+---
+const { pathname } = Astro.url;
+const nav = [
+  { href: '/states',   label: 'States' },
+  { href: '/explore',  label: 'Explore' },
+  { href: '/search',   label: 'Search' },
+  { href: '/docs',     label: 'API' },
+  { href: '/about',    label: 'About' },
+];
+function active(href: string): boolean {
+  if (href === '/') return pathname === '/';
+  return pathname.startsWith(href);
+}
+---
+
+<header class="relative z-10 border-b border-rule">
+  <div class="max-w-content mx-auto px-6 lg:px-10">
+    <div class="flex items-baseline justify-between py-4 gap-8">
+      <a href="/" class="group flex items-baseline gap-3 no-underline">
+        <span aria-hidden="true" class="text-native text-lg leading-none translate-y-[2px]">⚘</span>
+        <span class="font-serif text-xl tracking-tight text-ink">
+          rootfast
+        </span>
+      </a>
+
+      <nav aria-label="Primary">
+        <ul class="flex items-center gap-6">
+          {nav.map(item => (
+            <li>
+              <a
+                href={item.href}
+                class:list={[
+                  'link-hover font-sans text-sm tracking-wide',
+                  active(item.href) ? 'text-ink' : 'text-ink-2 hover:text-ink',
+                ]}
+                aria-current={active(item.href) ? 'page' : undefined}
+              >{item.label}</a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </div>
+  </div>
+</header>

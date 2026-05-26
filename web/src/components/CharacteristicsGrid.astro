@@ -1,0 +1,211 @@
+---
+import type { Characteristics } from '@/lib/api';
+
+export interface Props {
+  chars: Characteristics | null;
+}
+const { chars } = Astro.props;
+
+/* Field formatters ------------------------------------------------------- */
+
+const yn = (v: unknown) => v === 1 ? 'Yes' : v === 0 ? 'No' : null;
+
+type Field = {
+  label: string;
+  value: string | null;
+  /** When non-null but the value reads as something to weight visually. */
+  emphasis?: 'high' | 'low' | 'none';
+};
+
+function field(label: string, value: unknown): Field | null {
+  if (value === null || value === undefined || value === '') return null;
+  const v = typeof value === 'string' ? value : String(value);
+  let emphasis: Field['emphasis'] = 'none';
+  if (v === 'High') emphasis = 'high';
+  if (v === 'None' || v === 'Low') emphasis = 'low';
+  return { label, value: v, emphasis };
+}
+
+function fmt(c: Characteristics, key: keyof Characteristics, label: string): Field | null {
+  const v = c[key];
+  if (v === null || v === undefined) return null;
+
+  // Booleans (stored as 0/1)
+  if (v === 0 || v === 1) {
+    const text = yn(v);
+    return text ? { label, value: text } : null;
+  }
+  return field(label, v);
+}
+
+interface Group { title: string; section: string; fields: (Field | null)[]; }
+
+const groups: Group[] = chars ? [
+  {
+    title: 'Tolerances',
+    section: '§3a',
+    fields: [
+      fmt(chars, 'drought_tolerance',     'Drought'),
+      fmt(chars, 'shade_tolerance',       'Shade'),
+      fmt(chars, 'moisture_use',          'Moisture use'),
+      fmt(chars, 'fire_tolerance',        'Fire'),
+      fmt(chars, 'salinity_tolerance',    'Salinity'),
+      fmt(chars, 'anaerobic_tolerance',   'Anaerobic'),
+      fmt(chars, 'caco3_tolerance',       'CaCO₃'),
+      fmt(chars, 'hedge_tolerance',       'Hedging'),
+    ],
+  },
+  {
+    title: 'Climate & soil',
+    section: '§3b',
+    fields: [
+      chars.temperature_min_f != null
+        ? field('Cold tolerance', `${chars.temperature_min_f} °F minimum`)
+        : null,
+      chars.frost_free_days_min != null
+        ? field('Frost-free days', `${chars.frost_free_days_min} min.`)
+        : null,
+      chars.precipitation_min_in != null && chars.precipitation_max_in != null
+        ? field('Precipitation',
+            `${chars.precipitation_min_in}–${chars.precipitation_max_in} in/yr`)
+        : null,
+      chars.ph_min != null && chars.ph_max != null
+        ? field('pH range', `${chars.ph_min}–${chars.ph_max}`)
+        : null,
+      chars.root_depth_min_in != null
+        ? field('Root depth', `${chars.root_depth_min_in} in min.`)
+        : null,
+      fmt(chars, 'fertility_requirement', 'Fertility need'),
+      // Soil texture adaptations — collapse the three booleans into a sentence
+      ((): Field | null => {
+        const c = chars.adapted_to_coarse_textured_soils === 1;
+        const m = chars.adapted_to_medium_textured_soils === 1;
+        const f = chars.adapted_to_fine_textured_soils   === 1;
+        const set = [c && 'coarse', m && 'medium', f && 'fine'].filter(Boolean);
+        if (set.length === 0) return null;
+        return { label: 'Soil texture', value: set.join(', ') };
+      })(),
+    ],
+  },
+  {
+    title: 'Form & growth',
+    section: '§3c',
+    fields: [
+      fmt(chars, 'growth_form',            'Growth form'),
+      fmt(chars, 'growth_rate',            'Growth rate'),
+      fmt(chars, 'lifespan',               'Lifespan'),
+      chars.height_mature_ft != null
+        ? field('Mature height', `${chars.height_mature_ft} ft`)
+        : null,
+      chars.height_at_20_years_max_ft != null
+        ? field('Height @ 20 y', `${chars.height_at_20_years_max_ft} ft`)
+        : null,
+      fmt(chars, 'foliage_texture',        'Foliage texture'),
+      fmt(chars, 'foliage_color',          'Foliage colour'),
+      fmt(chars, 'foliage_porosity_summer', 'Porosity (summer)'),
+      fmt(chars, 'foliage_porosity_winter', 'Porosity (winter)'),
+      fmt(chars, 'flower_color',           'Flower colour'),
+      fmt(chars, 'fruit_color',            'Fruit colour'),
+      fmt(chars, 'fire_resistant',         'Fire resistant'),
+      fmt(chars, 'nitrogen_fixation',      'N fixation'),
+      fmt(chars, 'toxicity',               'Toxicity'),
+    ],
+  },
+  {
+    title: 'Reproduction',
+    section: '§3d',
+    fields: [
+      fmt(chars, 'bloom_period',           'Bloom period'),
+      fmt(chars, 'fruit_seed_abundance',   'Seed abundance'),
+      fmt(chars, 'fruit_seed_period_begin','Seed begins'),
+      fmt(chars, 'fruit_seed_period_end',  'Seed ends'),
+      fmt(chars, 'seed_spread_rate',       'Spread rate'),
+      fmt(chars, 'cold_stratification_required', 'Stratify'),
+      chars.seed_per_pound != null
+        ? field('Seeds / lb', chars.seed_per_pound.toLocaleString('en-US'))
+        : null,
+      // Propagation — collapse booleans
+      ((): Field | null => {
+        const ms = [
+          chars.propagated_by_seed === 1 && 'seed',
+          chars.propagated_by_cuttings === 1 && 'cuttings',
+          chars.propagated_by_bare_root === 1 && 'bare root',
+          chars.propagated_by_container === 1 && 'container',
+          chars.propagated_by_bulb === 1 && 'bulb',
+          chars.propagated_by_corm === 1 && 'corm',
+          chars.propagated_by_sod === 1 && 'sod',
+          chars.propagated_by_sprigs === 1 && 'sprigs',
+          chars.propagated_by_tubers === 1 && 'tubers',
+        ].filter(Boolean);
+        return ms.length ? { label: 'Propagation', value: ms.join(', ') } : null;
+      })(),
+    ],
+  },
+  {
+    title: 'Use & availability',
+    section: '§3e',
+    fields: [
+      fmt(chars, 'commercial_availability','Commercial availability'),
+      fmt(chars, 'nursery_stock_product',  'Nursery stock'),
+      fmt(chars, 'palatable_browse_animal','Browse palatability'),
+      fmt(chars, 'palatable_graze_animal', 'Graze palatability'),
+      fmt(chars, 'palatable_human',        'Palatable, human'),
+      fmt(chars, 'protein_potential',      'Protein potential'),
+      fmt(chars, 'lumber_product',         'Lumber'),
+      fmt(chars, 'fuelwood_product',       'Fuelwood'),
+      fmt(chars, 'christmas_tree_product', 'Christmas tree'),
+    ],
+  },
+] : [];
+
+const groupsWithData = groups
+  .map(g => ({ ...g, fields: g.fields.filter((f): f is Field => f !== null) }))
+  .filter(g => g.fields.length > 0);
+---
+
+{!chars ? (
+  <section aria-labelledby="chars-h" class="py-10">
+    <p class="label flex items-baseline gap-3"><span>§3</span><span>Cultivation</span></p>
+    <h2 id="chars-h" class="font-serif text-2xl mt-3 text-ink">No cultivation specs.</h2>
+    <p class="mt-3 max-w-prose font-serif italic text-ink-2 text-lg leading-relaxed">
+      USDA has not characterised this taxon. Roughly four out of five plants in
+      the database lack the detailed cultivation record present here — typically
+      because they have not been the focus of NRCS Plant Materials work. Range
+      and distribution data are unaffected.
+    </p>
+  </section>
+) : (
+  <section aria-labelledby="chars-h" class="py-10">
+    <header class="mb-7">
+      <p class="label flex items-baseline gap-3"><span>§3</span><span>Cultivation specs · USDA</span></p>
+      <h2 id="chars-h" class="font-serif text-2xl mt-2 text-ink">
+        Recorded by the USDA Plant Materials Program.
+      </h2>
+    </header>
+
+    <div class="space-y-12">
+      {groupsWithData.map(g => (
+        <div>
+          <div class="flex items-baseline gap-3 mb-4">
+            <span class="section-num">{g.section}</span>
+            <h3 class="font-sans text-xs font-bold tracking-smallcaps uppercase text-ink">{g.title}</h3>
+            <span class="flex-1 border-t border-rule h-0 self-center"></span>
+          </div>
+          <dl class="field-grid">
+            {g.fields.map(f => (
+              <>
+                <dt>{f.label}</dt>
+                <dd>
+                  <span class:list={[
+                    f.emphasis === 'high' && 'text-native font-medium',
+                    f.emphasis === 'low'  && 'text-ink-3',
+                  ]}>{f.value}</span>
+                </dd>
+              </>
+            ))}
+          </dl>
+        </div>
+      ))}
+    </div>
+  </section>
+)}

@@ -1,0 +1,14 @@
+---
+// Legacy /states/{code} URL — redirect to /{state_slug}.
+import { stateSlugOf, STATE_NAMES } from '@/lib/states';
+
+const { code } = Astro.params;
+if (!code) {
+  return new Response('state code required', { status: 400 });
+}
+const upper = code.toUpperCase();
+if (!STATE_NAMES[upper]) {
+  return new Response(`Unknown state "${code}"`, { status: 404 });
+}
+return Astro.redirect(`/${stateSlugOf(upper)}`, 301);
+---

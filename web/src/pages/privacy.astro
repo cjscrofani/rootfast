@@ -1,0 +1,146 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+
+// "Last updated" is the deploy date.
+const today = new Date().toISOString().slice(0, 10);
+---
+
+<BaseLayout
+  title="Privacy Policy — rootfast"
+  description="What rootfast does and doesn't collect."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/" class="link-hover">Index</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Privacy</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Policy &middot; last updated {today}</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        Privacy Policy
+      </h1>
+      <p class="mt-4 font-serif text-xl italic text-ink-2">
+        the short version: rootfast collects almost nothing.
+      </p>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <section class="py-10 grid grid-cols-1 lg:grid-cols-12 gap-12">
+      <div class="lg:col-span-8 space-y-10 text-ink-2 leading-relaxed">
+        <div>
+          <h2 class="font-serif text-2xl text-ink">What we don't do</h2>
+          <ul class="mt-4 space-y-2 text-sm">
+            <li>● No user accounts. There is nothing to sign up for.</li>
+            <li>● No tracking cookies, pixels, fingerprinting, or cross-site identifiers.</li>
+            <li>● No advertising, affiliate links, or remarketing.</li>
+            <li>● No selling, sharing, or trading any data about you.</li>
+          </ul>
+        </div>
+
+        <div>
+          <h2 class="font-serif text-2xl text-ink">What is collected</h2>
+          <p class="mt-3 text-sm">
+            The site runs on Cloudflare. Cloudflare keeps standard edge-server logs
+            (IP address, timestamp, request URL, user-agent, response status) for
+            operational purposes — abuse mitigation, debugging, and DDoS protection.
+            Cloudflare's own privacy notice governs how those logs are handled and
+            for how long.
+          </p>
+          <p class="mt-3 text-sm">
+            Rootfast itself does not write any user-identifying data to its
+            database. The API ingests USDA + GBIF + iNaturalist data and returns
+            it; it does not record who asked.
+          </p>
+        </div>
+
+        <div>
+          <h2 class="font-serif text-2xl text-ink">Cloudflare Analytics</h2>
+          <p class="mt-3 text-sm">
+            Rootfast uses
+            <a href="https://www.cloudflare.com/web-analytics/" target="_blank" rel="noreferrer" class="link-hover text-ink">Cloudflare Analytics</a>
+            to understand aggregate traffic — total page views, referrers,
+            country-level geography, and broad browser / device categories.
+            This data is collected <em>without cookies</em>, without any
+            persistent identifier across visits, and without cross-site
+            tracking. Individual visits are not profiled and cannot be linked
+            to you on return. Cloudflare processes the data on our behalf and
+            does not sell it.
+          </p>
+          <p class="mt-3 text-sm">
+            If you'd rather not be counted at all, any standard ad- or
+            tracking-blocker that blocks Cloudflare's insights endpoints will
+            exclude you with no effect on the rest of the site.
+          </p>
+        </div>
+
+        <div>
+          <h2 class="font-serif text-2xl text-ink">Third-party content</h2>
+          <p class="mt-3 text-sm">
+            Some pages embed images served directly from iNaturalist's open-data
+            CDN (<span class="mono">inaturalist-open-data.s3.amazonaws.com</span>).
+            Loading those images causes your browser to connect to AWS
+            infrastructure. We attach no identifiers; the request is whatever
+            your browser sends by default.
+          </p>
+          <p class="mt-3 text-sm">
+            Links out to plants.usda.gov, gbif.org, itis.gov, and similar are
+            standard hyperlinks — clicking them takes you to those sites under
+            their own policies.
+          </p>
+        </div>
+
+        <div>
+          <h2 class="font-serif text-2xl text-ink">Contact form</h2>
+          <p class="mt-3 text-sm">
+            If you reach out via the <a href="/contact" class="link-hover text-ink">contact form</a>,
+            your name, email, and message are forwarded by a Cloudflare Worker
+            (operated by Gold Dust Web) through SendGrid to a mailbox we monitor.
+            The submitting IP is briefly retained for rate-limiting (one hour)
+            and then discarded. Messages themselves live in the recipient
+            mailbox until manually deleted; they are used only to reply to your
+            inquiry.
+          </p>
+        </div>
+
+        <div>
+          <h2 class="font-serif text-2xl text-ink">Children</h2>
+          <p class="mt-3 text-sm">
+            Rootfast does not knowingly collect any data about anyone, and
+            therefore does not knowingly collect data about children. The
+            content is general botanical reference material suitable for all ages.
+          </p>
+        </div>
+
+        <div>
+          <h2 class="font-serif text-2xl text-ink">Changes</h2>
+          <p class="mt-3 text-sm">
+            If this policy materially changes, the updated text replaces this
+            page and the date at the top of the page changes. There is no
+            mailing list to notify.
+          </p>
+        </div>
+      </div>
+
+      <aside class="lg:col-span-4 lg:pl-10 lg:border-l lg:border-rule">
+        <p class="label">In one line</p>
+        <p class="mt-3 font-serif text-lg italic text-ink-2 leading-snug">
+          Rootfast doesn't want your data. It wants you to read plant records.
+        </p>
+
+        <hr class="rule mt-8" />
+
+        <p class="label mt-8">Questions</p>
+        <p class="mt-3 text-sm">
+          Use the <a href="/contact" class="link-hover text-ink">contact form</a>
+          for anything privacy-related.
+        </p>
+      </aside>
+    </section>
+  </article>
+</BaseLayout>

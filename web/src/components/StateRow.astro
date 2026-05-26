@@ -1,0 +1,36 @@
+---
+import type { StateSummary } from '@/lib/api';
+import { stateNameOf, stateSlugOf } from '@/lib/states';
+
+interface Row { code: string; live: boolean; s: StateSummary | undefined; }
+interface Props { row: Row; }
+const { row } = Astro.props;
+const { code, live, s } = row;
+---
+
+{live && s ? (
+  <li>
+    <a href={`/${stateSlugOf(code)}`}
+       class="flex items-baseline gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+      <span class="mono text-xs text-ink-3 w-8">{code}</span>
+      <span class="flex-1 font-serif text-lg text-ink">{stateNameOf(code)}</span>
+      <span class="mono text-sm text-ink-2 hidden sm:inline-block w-24 text-right">
+        {s.taxa_count.toLocaleString('en-US')}&nbsp;<span class="text-ink-3">taxa</span>
+      </span>
+      <span class="mono text-sm text-ink-2 hidden sm:inline-block w-24 text-right">
+        {s.county_count}&nbsp;<span class="text-ink-3">counties</span>
+      </span>
+      <span class="label text-ink-3 group-hover:text-native transition-colors">Open ↗</span>
+    </a>
+  </li>
+) : (
+  <li>
+    <div class="flex items-baseline gap-4 py-3.5 px-0 text-ink-3" title="Not yet ingested">
+      <span class="mono text-xs w-8">{code}</span>
+      <span class="flex-1 font-serif text-lg italic">{stateNameOf(code)}</span>
+      <span class="hidden sm:inline-block w-24 text-right mono text-xs italic">—</span>
+      <span class="hidden sm:inline-block w-24 text-right mono text-xs italic">pending</span>
+      <span class="label">○</span>
+    </div>
+  </li>
+)}

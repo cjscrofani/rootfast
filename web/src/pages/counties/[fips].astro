@@ -1,0 +1,25 @@
+---
+// Legacy /counties/{fips} URL — redirect to /{state_slug}/{county_slug}.
+import { api, ApiError } from '@/lib/api';
+import { stateSlugOf, slugifyCounty } from '@/lib/states';
+
+const { fips } = Astro.params;
+if (!fips) {
+  return new Response('fips required', { status: 400 });
+}
+
+// Hit the API once to learn the county_name + state_code, then redirect.
+try {
+  const data = await api.county(fips);
+  const { county } = data;
+  return Astro.redirect(
+    `/${stateSlugOf(county.state_code)}/${slugifyCounty(county.county_name)}`,
+    301,
+  );
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    return new Response(`No county with FIPS "${fips}"`, { status: 404 });
+  }
+  throw err;
+}
+---

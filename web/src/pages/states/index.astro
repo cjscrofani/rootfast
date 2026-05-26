@@ -1,0 +1,192 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import StateRow from '@/components/StateRow.astro';
+import { api, type StatesListResponse, type StateSummary } from '@/lib/api';
+import { STATE_NAMES, STATE_REGIONS, stateNameOf } from '@/lib/states';
+
+let data: StatesListResponse;
+try {
+  data = await api.states();
+} catch (err) {
+  return new Response('Failed to load states', { status: 502 });
+}
+
+const byCode = new Map(data.states.map(s => [s.state_code, s]));
+const orderedRegions = Object.keys(STATE_REGIONS);
+const allCodes = Object.keys(STATE_NAMES);
+
+const liveStates = data.states.length;
+const totalKnown = allCodes.length;
+const totalTaxa = data.states.reduce((n, s) => n + s.taxa_count, 0);
+const totalCounties = data.states.reduce((n, s) => n + s.county_count, 0);
+
+const alphabetical = [...allCodes].sort((a, b) => stateNameOf(a).localeCompare(stateNameOf(b)));
+
+const liveCodes = [...byCode.values()]
+  .sort((a, b) => b.taxa_count - a.taxa_count)
+  .map(s => s.state_code);
+const pendingCodes = allCodes
+  .filter(c => !byCode.has(c))
+  .sort((a, b) => stateNameOf(a).localeCompare(stateNameOf(b)));
+const byTaxa = [...liveCodes, ...pendingCodes];
+
+interface Row { code: string; live: boolean; s: StateSummary | undefined; }
+const rowsFor = (codes: string[]): Row[] =>
+  codes.map(code => ({ code, live: byCode.has(code), s: byCode.get(code) }));
+---
+
+<BaseLayout
+  title="States — rootfast"
+  description="Browse the rootfast catalogue by state. Drill down to county listings of native and introduced plants."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/" class="link-hover">Index</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">States</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Geographic index</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        States of the catalogue
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Open a state to see its counties, then a county to read the plants recorded there.
+        Coverage is uneven by design — each state lands as its USDA data is ingested.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">States live</dt>
+          <dd class="mt-1 mono">{liveStates} <span class="text-ink-3">/ {totalKnown}</span></dd>
+        </div>
+        <div>
+          <dt class="label">Counties</dt>
+          <dd class="mt-1 mono">{totalCounties.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Distinct taxa</dt>
+          <dd class="mt-1 mono">{totalTaxa.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Coverage status</dt>
+          <dd class="mt-1 mono italic text-ink-3">progressive</dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <!-- View toggle -->
+    <div class="pt-7 pb-2 flex flex-wrap items-baseline gap-x-2 gap-y-3" role="tablist" aria-label="State list arrangement">
+      <span class="label mr-2">Arrange by</span>
+      <button class="pill rf-view rf-active" data-view="region" role="tab" aria-selected="true" type="button">Region</button>
+      <button class="pill rf-view" data-view="alpha"  role="tab" aria-selected="false" type="button">A–Z</button>
+      <button class="pill rf-view" data-view="taxa"   role="tab" aria-selected="false" type="button">Taxa count</button>
+      <button class="pill rf-view" data-view="status" role="tab" aria-selected="false" type="button">Status</button>
+    </div>
+
+    <!-- Panel: Region (default) -->
+    <section class="py-7" data-view-panel="region" role="tabpanel">
+      {orderedRegions.map(region => {
+        const codes = STATE_REGIONS[region];
+        const liveInRegion = codes.filter(c => byCode.has(c)).length;
+        const sorted = [...codes].sort((a, b) => stateNameOf(a).localeCompare(stateNameOf(b)));
+        return (
+          <div class="mb-12">
+            <div class="flex items-baseline justify-between gap-4 mb-5">
+              <h2 class="font-serif text-2xl italic text-ink">{region}</h2>
+              <span class="label">{liveInRegion} / {codes.length} live</span>
+            </div>
+            <ul class="divide-y divide-rule border-t border-b border-rule">
+              {rowsFor(sorted).map(r => <StateRow row={r} />)}
+            </ul>
+          </div>
+        );
+      })}
+    </section>
+
+    <!-- Panel: Alphabetical -->
+    <section class="py-7" data-view-panel="alpha" role="tabpanel" hidden>
+      <div class="flex items-baseline justify-between gap-4 mb-5">
+        <h2 class="font-serif text-2xl italic text-ink">All states &amp; territories, A–Z</h2>
+        <span class="label">{totalKnown} entries</span>
+      </div>
+      <ul class="divide-y divide-rule border-t border-b border-rule">
+        {rowsFor(alphabetical).map(r => <StateRow row={r} />)}
+      </ul>
+    </section>
+
+    <!-- Panel: By taxa count -->
+    <section class="py-7" data-view-panel="taxa" role="tabpanel" hidden>
+      <div class="flex items-baseline justify-between gap-4 mb-5">
+        <h2 class="font-serif text-2xl italic text-ink">By taxa count, largest first</h2>
+        <span class="label">{liveStates} live · pending below</span>
+      </div>
+      <ul class="divide-y divide-rule border-t border-b border-rule">
+        {rowsFor(byTaxa).map(r => <StateRow row={r} />)}
+      </ul>
+    </section>
+
+    <!-- Panel: By coverage status -->
+    <section class="py-7" data-view-panel="status" role="tabpanel" hidden>
+      <div class="mb-10">
+        <div class="flex items-baseline justify-between gap-4 mb-5">
+          <h2 class="font-serif text-2xl italic text-ink">Live</h2>
+          <span class="label">{liveStates} {liveStates === 1 ? 'state' : 'states'}</span>
+        </div>
+        <ul class="divide-y divide-rule border-t border-b border-rule">
+          {rowsFor(alphabetical.filter(c => byCode.has(c))).map(r => <StateRow row={r} />)}
+        </ul>
+      </div>
+      <div>
+        <div class="flex items-baseline justify-between gap-4 mb-5">
+          <h2 class="font-serif text-2xl italic text-ink">Pending</h2>
+          <span class="label">{totalKnown - liveStates} pending</span>
+        </div>
+        <ul class="divide-y divide-rule border-t border-b border-rule">
+          {rowsFor(alphabetical.filter(c => !byCode.has(c))).map(r => <StateRow row={r} />)}
+        </ul>
+      </div>
+    </section>
+  </article>
+
+  <script>
+    (() => {
+      const buttons = document.querySelectorAll<HTMLButtonElement>('[data-view]');
+      const panels  = document.querySelectorAll<HTMLElement>('[data-view-panel]');
+
+      function activate(view: string) {
+        buttons.forEach(b => {
+          const active = b.dataset.view === view;
+          b.classList.toggle('rf-active', active);
+          b.setAttribute('aria-selected', active ? 'true' : 'false');
+        });
+        panels.forEach(p => {
+          p.hidden = p.dataset.viewPanel !== view;
+        });
+        try { history.replaceState(null, '', `#${view}`); } catch {}
+      }
+
+      buttons.forEach(b => {
+        b.addEventListener('click', () => activate(b.dataset.view!));
+      });
+
+      const hash = location.hash.replace('#', '');
+      if (['region','alpha','taxa','status'].includes(hash) && hash !== 'region') {
+        activate(hash);
+      }
+    })();
+  </script>
+
+  <style is:global>
+    .rf-view { cursor: pointer; transition: transform 120ms ease; }
+    .rf-view.rf-active { box-shadow: inset 0 -2px 0 currentColor; transform: translateY(-1px); }
+  </style>
+</BaseLayout>

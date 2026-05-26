@@ -1,0 +1,177 @@
+---
+/* Client-side search-as-you-type island.
+   Hits /v1/search?q=... with a 180ms debounce. Keyboard nav (↑↓ enter Esc). */
+
+export interface Props {
+  placeholder?: string;
+  autofocus?: boolean;
+  initialQuery?: string;
+}
+const {
+  placeholder = 'Scientific or common name — e.g. ponderosa, Pinus, monkshood',
+  autofocus = false,
+  initialQuery = '',
+} = Astro.props;
+
+import { API_BASE } from '@/lib/api';
+---
+
+<div
+  class="rf-search"
+  data-api-base={API_BASE}
+  data-initial-query={initialQuery}
+>
+  <div class="flex items-baseline gap-3 mb-3">
+    <span aria-hidden="true" class="text-native text-lg">↳</span>
+    <span class="label">Locate a taxon</span>
+  </div>
+
+  <input
+    type="text"
+    role="combobox"
+    aria-expanded="false"
+    aria-autocomplete="list"
+    aria-controls="rf-search-results"
+    class="input rf-search-input"
+    placeholder={placeholder}
+    autocomplete="off"
+    spellcheck="false"
+    value={initialQuery}
+    autofocus={autofocus}
+  />
+
+  <p class="rf-search-hint mt-2 text-xs text-ink-3 italic">
+    Enter at least two letters · arrow keys to navigate · enter to open
+  </p>
+
+  <div class="rf-search-status mt-4 text-sm text-ink-3" aria-live="polite"></div>
+
+  <ul
+    id="rf-search-results"
+    role="listbox"
+    class="rf-search-results mt-2 divide-y divide-rule"
+  ></ul>
+</div>
+
+<script>
+(() => {
+  for (const root of document.querySelectorAll<HTMLElement>('.rf-search')) {
+    const api = root.dataset.apiBase!;
+    const input  = root.querySelector<HTMLInputElement>('.rf-search-input')!;
+    const status = root.querySelector<HTMLElement>('.rf-search-status')!;
+    const list   = root.querySelector<HTMLElement>('.rf-search-results')!;
+    let activeIdx = -1;
+    let timer: number | undefined;
+    let inflight: AbortController | null = null;
+
+    interface Hit { usda_symbol: string; scientific_name: string; common_name: string|null; family: string|null; photo_thumb_url?: string|null; }
+
+    async function search(q: string) {
+      if (inflight) inflight.abort();
+      if (q.length < 2) { list.innerHTML = ''; status.textContent = ''; return; }
+      inflight = new AbortController();
+      status.textContent = 'Searching…';
+      try {
+        const r = await fetch(`${api}/v1/search?q=${encodeURIComponent(q)}`, { signal: inflight.signal });
+        if (!r.ok) throw new Error(`${r.status}`);
+        const data = await r.json() as { results: Hit[] };
+        render(data.results, q);
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') status.textContent = 'Search failed';
+      }
+    }
+
+    function highlight(text: string, q: string): string {
+      if (!q) return text;
+      const i = text.toLowerCase().indexOf(q.toLowerCase());
+      if (i < 0) return text;
+      return text.slice(0, i)
+        + '<mark style="background:rgba(45,79,30,0.18);color:inherit;">'
+        + text.slice(i, i + q.length)
+        + '</mark>'
+        + text.slice(i + q.length);
+    }
+
+    function render(hits: Hit[], q: string) {
+      activeIdx = -1;
+      if (hits.length === 0) {
+        list.innerHTML = '';
+        status.textContent = 'No matches.';
+        return;
+      }
+      status.textContent = `${hits.length} match${hits.length === 1 ? '' : 'es'}.`;
+      list.innerHTML = hits.map((h, i) => {
+        const cleaned = h.scientific_name.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+        const common = (h.common_name || '').replace(/</g,'&lt;');
+        const family = (h.family || '').replace(/</g,'&lt;');
+        const thumb = h.photo_thumb_url
+          ? `<img src="${h.photo_thumb_url}" alt="" loading="lazy" class="shrink-0 w-11 h-11 object-cover border border-rule bg-surface">`
+          : `<span class="shrink-0 w-11 h-11 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>`;
+        return `
+          <li role="option" data-symbol="${h.usda_symbol}" data-idx="${i}">
+            <a href="/plants/${encodeURIComponent(h.usda_symbol)}"
+               class="flex items-start gap-3 py-3 group hover:bg-surface px-3 -mx-3 transition-colors">
+              ${thumb}
+              <div class="flex-1 min-w-0">
+                <div class="flex items-baseline justify-between gap-4">
+                  <span class="font-serif italic text-lg text-ink truncate">
+                    ${highlight(cleaned, q)}
+                  </span>
+                  <span class="mono text-xs text-ink-3 shrink-0">${h.usda_symbol}</span>
+                </div>
+                <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                  ${common ? `<span>${highlight(common, q)}</span>` : ''}
+                  ${common && family ? '<span class="text-ink-3">·</span>' : ''}
+                  ${family ? `<span class="font-serif italic text-ink-3">${family.split(' ')[0]}</span>` : ''}
+                </div>
+              </div>
+            </a>
+          </li>`;
+      }).join('');
+    }
+
+    function setActive(idx: number) {
+      const items = list.querySelectorAll<HTMLElement>('li');
+      items.forEach(li => li.classList.remove('rf-active'));
+      activeIdx = Math.max(-1, Math.min(idx, items.length - 1));
+      if (activeIdx >= 0) {
+        const it = items[activeIdx]!;
+        it.classList.add('rf-active');
+        it.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    input.addEventListener('input', () => {
+      if (timer) window.clearTimeout(timer);
+      const q = input.value.trim();
+      timer = window.setTimeout(() => search(q), 180);
+    });
+
+    input.addEventListener('keydown', e => {
+      const items = list.querySelectorAll<HTMLElement>('li');
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActive(activeIdx + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(activeIdx - 1); }
+      else if (e.key === 'Enter') {
+        if (activeIdx >= 0) {
+          e.preventDefault();
+          const sym = items[activeIdx]!.dataset.symbol!;
+          window.location.href = `/plants/${encodeURIComponent(sym)}`;
+        }
+      }
+      else if (e.key === 'Escape') { input.value = ''; list.innerHTML = ''; status.textContent = ''; }
+    });
+
+    // Honor initial query (server-rendered)
+    const initialQ = (root.dataset.initialQuery || '').trim();
+    if (initialQ) search(initialQ);
+  }
+})();
+</script>
+
+<style>
+  .rf-search-results { list-style: none; padding: 0; margin: 0; }
+  .rf-search-results li.rf-active a {
+    background: var(--rf-surface);
+    box-shadow: inset 3px 0 0 var(--rf-native);
+  }
+</style>

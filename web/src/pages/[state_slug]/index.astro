@@ -1,0 +1,325 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import {
+  api, ApiError,
+  type StatePlantsResponse, type StateCountiesResponse,
+} from '@/lib/api';
+import {
+  stateNameOf, regionOf, stateCodeOfSlug, stateSlugOf, slugifyCounty,
+} from '@/lib/states';
+
+const { state_slug } = Astro.params;
+if (!state_slug) {
+  return new Response('state slug required', { status: 400 });
+}
+
+const code = stateCodeOfSlug(state_slug);
+if (!code) {
+  return new Response(`Unknown state "${state_slug}"`, { status: 404 });
+}
+
+// Canonicalize: if the slug-cased name doesn't match exactly (e.g. unexpected
+// uppercase), redirect to the canonical lowercase slug.
+const canonicalSlug = stateSlugOf(code);
+if (state_slug !== canonicalSlug) {
+  return Astro.redirect(`/${canonicalSlug}`, 301);
+}
+
+// Read URL params for server-side pagination + filtering.
+const PAGE_SIZE = 50;
+const urlParams = Astro.url.searchParams;
+
+const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
+const page    = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
+const offset  = (page - 1) * PAGE_SIZE;
+
+const VALID_NATIVITY = new Set(['Native', 'Introduced', 'Both']);
+const rawNativity    = urlParams.get('nativity') ?? '';
+const nativity       = VALID_NATIVITY.has(rawNativity) ? rawNativity : null;
+
+const VALID_SORT = new Set(['sci', 'common', 'counties']);
+const rawSort    = urlParams.get('sort') ?? 'sci';
+const sort       = VALID_SORT.has(rawSort) ? rawSort : 'sci';
+
+let plantsData: StatePlantsResponse;
+let countiesData: StateCountiesResponse;
+let totalUnfilteredTaxa = 0;
+try {
+  // Three parallel API calls: the filtered page, the county list for §2, and
+  // a cheap unfiltered state-header lookup so we can show full totals in §1.
+  const [pd, cd, header] = await Promise.all([
+    api.statePlants(code, {
+      limit: PAGE_SIZE,
+      offset,
+      nativity: nativity ?? undefined,
+      sort,
+    }),
+    api.stateCounties(code),
+    api.state(code),
+  ]);
+  plantsData = pd;
+  countiesData = cd;
+  totalUnfilteredTaxa = header.state.taxa_count;
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    return new Response(`No state with code "${code}"`, { status: 404 });
+  }
+  throw err;
+}
+
+const state = plantsData.state;
+const stateName = stateNameOf(state.state_code);
+const region = regionOf(state.state_code);
+
+// Pagination math from API response.
+const totalUnderFilter = plantsData.counts.taxa;
+const totalPages       = Math.max(1, Math.ceil(totalUnderFilter / PAGE_SIZE));
+const clampedPage      = Math.min(page, totalPages);
+
+const showingFrom = totalUnderFilter === 0 ? 0 : offset + 1;
+const showingTo   = Math.min(offset + PAGE_SIZE, totalUnderFilter);
+
+// Build query strings preserving the other params for filter / sort / page links.
+function qs(overrides: Record<string, string | null>): string {
+  const next = new URLSearchParams();
+  if (nativity) next.set('nativity', nativity);
+  if (sort !== 'sci') next.set('sort', sort);
+  if (clampedPage > 1) next.set('page', String(clampedPage));
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null) next.delete(k);
+    else            next.set(k, v);
+  }
+  const s = next.toString();
+  return s ? `?${s}` : '';
+}
+
+// Build county slug index. On the unlikely event of a slug collision within
+// the same state, suffix subsequent ones with -2, -3 etc.
+const slugCounts = new Map<string, number>();
+const countiesAnnotated = countiesData.counties.map(c => {
+  let slug = slugifyCounty(c.county_name);
+  const n = (slugCounts.get(slug) ?? 0) + 1;
+  slugCounts.set(slug, n);
+  if (n > 1) slug = `${slug}-${n}`;
+  return { ...c, slug };
+});
+const counties = [...countiesAnnotated].sort((a, b) =>
+  a.county_name.localeCompare(b.county_name)
+);
+
+const title = `${stateName} — rootfast`;
+---
+
+<BaseLayout title={title}
+  description={`The ${stateName} flora in rootfast: ${plantsData.counts.taxa.toLocaleString('en-US')} taxa across ${plantsData.counts.counties} counties.`}
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/" class="link-hover">Index</a>
+      <span class="mx-2">/</span>
+      <a href="/states" class="link-hover">States</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">{stateName}</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span>§1</span><span>State listing</span>
+        <span class="text-ink-3 font-normal normal-case tracking-normal italic">
+          &mdash; {region}
+        </span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        {stateName}
+      </h1>
+      <p class="mt-4 font-serif text-xl italic text-ink-2">
+        a regional flora of {plantsData.counts.counties.toLocaleString('en-US')} counties
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">State code</dt>
+          <dd class="mt-1 mono">{state.state_code} <span class="text-ink-3">· FIPS {state.state_fips ?? '—'}</span></dd>
+        </div>
+        <div>
+          <dt class="label">Taxa recorded</dt>
+          <dd class="mt-1 mono">{totalUnfilteredTaxa.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Counties</dt>
+          <dd class="mt-1 mono">{plantsData.counts.counties.toLocaleString('en-US')}</dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <section class="py-10" id="counties" data-counties-section>
+      <div class="flex items-baseline justify-between gap-4 mb-5">
+        <div>
+          <p class="label flex items-baseline gap-3"><span>§2</span><span>Counties</span></p>
+          <h2 class="mt-3 font-serif text-2xl italic text-ink">
+            Drill down to a county
+          </h2>
+        </div>
+        <span class="label hidden sm:inline">{counties.length} counties</span>
+      </div>
+
+      <ul class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-rule border border-rule">
+        {counties.map((c, i) => (
+          <li class="rf-county-cell" data-index={i} {...(i >= 10 ? { hidden: true } : {})}>
+            <a href={`/${canonicalSlug}/${c.slug}`}
+               class="block bg-paper px-5 py-4 hover:bg-surface transition-colors no-underline group">
+              <div class="flex items-baseline justify-between gap-3">
+                <span class="font-serif text-lg text-ink leading-tight">{c.county_name}</span>
+                <span class="mono text-xs text-ink-3">{c.county_fips}</span>
+              </div>
+              <div class="mt-1 flex items-baseline justify-between gap-3 text-sm text-ink-2">
+                <span>
+                  <span class="mono">{c.taxa_count.toLocaleString('en-US')}</span>&nbsp;<span class="text-ink-3">taxa</span>
+                </span>
+                <span class="label text-ink-3 group-hover:text-native transition-colors">Open ↗</span>
+              </div>
+            </a>
+          </li>
+        ))}
+      </ul>
+
+      {counties.length > 10 && (
+        <div class="mt-5 flex items-baseline justify-center">
+          <button type="button"
+                  class="rf-counties-toggle link-hover text-sm font-sans tracking-wide text-ink-2 hover:text-ink"
+                  data-shown="10"
+                  data-total={counties.length}>
+            Show all {counties.length} counties ↓
+          </button>
+        </div>
+      )}
+    </section>
+
+    <script>
+      (() => {
+        for (const section of document.querySelectorAll<HTMLElement>('[data-counties-section]')) {
+          const btn = section.querySelector<HTMLButtonElement>('.rf-counties-toggle');
+          if (!btn) continue;
+          const cells = section.querySelectorAll<HTMLElement>('.rf-county-cell');
+          const total = Number(btn.dataset.total ?? 0);
+          let expanded = false;
+          btn.addEventListener('click', () => {
+            expanded = !expanded;
+            for (const c of cells) {
+              const i = Number(c.dataset.index ?? 0);
+              c.hidden = !expanded && i >= 10;
+            }
+            btn.textContent = expanded
+              ? 'Show first 10 only ↑'
+              : `Show all ${total} counties ↓`;
+            if (!expanded) {
+              // Scroll the counties heading back into view when collapsing.
+              section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          });
+        }
+      })();
+    </script>
+
+    <hr class="rule-strong" />
+
+    <section class="py-10" id="plants">
+      <div class="flex items-baseline justify-between gap-4 mb-5">
+        <div>
+          <p class="label flex items-baseline gap-3"><span>§3</span><span>Catalogue</span></p>
+          <h2 class="mt-3 font-serif text-2xl italic text-ink">
+            All taxa recorded in {stateName}
+          </h2>
+        </div>
+      </div>
+
+      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-5">
+        <div>
+          <p class="label">Filter</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filter by nativity">
+            <a class={`pill ${nativity === null ? 'rf-active' : ''}`}      href={qs({ nativity: null, page: null })}>All</a>
+            <a class={`pill pill-native ${nativity === 'Native' ? 'rf-active' : ''}`}     href={qs({ nativity: 'Native',     page: null })}>Native</a>
+            <a class={`pill pill-introduced ${nativity === 'Introduced' ? 'rf-active' : ''}`} href={qs({ nativity: 'Introduced', page: null })}>Introduced</a>
+            <a class={`pill pill-both ${nativity === 'Both' ? 'rf-active' : ''}`}       href={qs({ nativity: 'Both',       page: null })}>Both</a>
+          </div>
+        </div>
+
+        <form method="get" class="flex items-center gap-3">
+          {nativity && <input type="hidden" name="nativity" value={nativity} />}
+          <label for="rf-sort" class="label">Sort by</label>
+          <select id="rf-sort" name="sort" onchange="this.form.submit()"
+                  class="font-sans text-sm bg-paper border-b border-rule-strong py-1 px-0 focus:outline-none focus:border-native">
+            <option value="sci"      selected={sort === 'sci'}>Scientific name</option>
+            <option value="common"   selected={sort === 'common'}>Common name</option>
+            <option value="counties" selected={sort === 'counties'}>County count</option>
+          </select>
+        </form>
+      </div>
+
+      <p class="mt-5 text-sm text-ink-3 italic">
+        Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
+        of <span class="text-ink-2">{totalUnderFilter.toLocaleString('en-US')}</span>{nativity && <> {' '}<span class="text-ink-3">({nativity.toLowerCase()})</span></>}.
+      </p>
+
+      <ul class="mt-2 divide-y divide-rule">
+        {plantsData.plants.map(p => {
+          const cls = p.nativity === 'Native' ? 'pill-native'
+                    : p.nativity === 'Introduced' ? 'pill-introduced'
+                    : 'pill-both';
+          return (
+            <li>
+              <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
+                 class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+                {p.photo_thumb_url ? (
+                  <img src={p.photo_thumb_url} alt="" loading="lazy"
+                       class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
+                ) : (
+                  <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
+                )}
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-baseline justify-between gap-4">
+                    <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
+                    <span class="shrink-0 flex items-baseline gap-3">
+                      <span class={`pill ${cls}`}>{p.nativity}</span>
+                      <span class="mono text-xs text-ink-3">{p.usda_symbol}</span>
+                    </span>
+                  </div>
+                  <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                    {p.common_name && <span>{p.common_name}</span>}
+                    {p.common_name && p.family && <span class="text-ink-3">·</span>}
+                    {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
+                    <span class="text-ink-3 ml-auto mono text-xs">
+                      {p.county_count} {p.county_count === 1 ? 'county' : 'counties'}
+                    </span>
+                  </div>
+                </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+
+      {totalPages > 1 && (
+        <nav class="rf-pager mt-6 flex items-center justify-between gap-4 text-sm" aria-label="Catalogue pagination">
+          {clampedPage > 1
+            ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
+            : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
+          <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
+          {clampedPage < totalPages
+            ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
+            : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
+        </nav>
+      )}
+    </section>
+  </article>
+
+  <style is:global>
+    a.pill.rf-active { box-shadow: inset 0 -2px 0 currentColor; transform: translateY(-1px); }
+    a.pill { text-decoration: none; }
+    span.pill.rf-disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</BaseLayout>

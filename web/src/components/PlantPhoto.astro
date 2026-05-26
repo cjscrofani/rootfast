@@ -1,0 +1,135 @@
+---
+import type { Photo } from '@/lib/api';
+
+export interface Props {
+  photo: Photo | null;
+  scientificName: string;
+  commonName?: string | null;
+}
+const { photo, scientificName, commonName } = Astro.props;
+
+/* Format the iNat attribution string. It comes as:
+     "(c) photographer name, some rights reserved (CC BY-NC), uploaded by …"
+   We pull the photographer + license code, drop the boilerplate. */
+function parseAttribution(raw: string | null): { who: string | null; license: string | null } {
+  if (!raw) return { who: null, license: null };
+  // Strip leading "(c) " or "© "
+  const cleaned = raw.replace(/^\(c\)\s*/, '').replace(/^©\s*/, '');
+  // Split at the first comma
+  const i = cleaned.indexOf(',');
+  return {
+    who: (i > 0 ? cleaned.slice(0, i) : cleaned).trim(),
+    license: null,
+  };
+}
+
+const LICENSE_LABELS: Record<string, string> = {
+  'cc0':           'CC0 · public domain',
+  'cc-by':         'CC BY',
+  'cc-by-sa':      'CC BY-SA',
+  'cc-by-nc':      'CC BY-NC',
+  'cc-by-nc-sa':   'CC BY-NC-SA',
+  'cc-by-nc-nd':   'CC BY-NC-ND',
+  'cc-by-nd':      'CC BY-ND',
+};
+const LICENSE_URLS: Record<string, string> = {
+  'cc0':         'https://creativecommons.org/publicdomain/zero/1.0/',
+  'cc-by':       'https://creativecommons.org/licenses/by/4.0/',
+  'cc-by-sa':    'https://creativecommons.org/licenses/by-sa/4.0/',
+  'cc-by-nc':    'https://creativecommons.org/licenses/by-nc/4.0/',
+  'cc-by-nc-sa': 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
+  'cc-by-nc-nd': 'https://creativecommons.org/licenses/by-nc-nd/4.0/',
+  'cc-by-nd':    'https://creativecommons.org/licenses/by-nd/4.0/',
+};
+
+const meta = photo ? parseAttribution(photo.attribution) : { who: null, license: null };
+const licLabel = photo?.license ? (LICENSE_LABELS[photo.license] ?? photo.license.toUpperCase()) : null;
+const licUrl   = photo?.license ? LICENSE_URLS[photo.license] : null;
+const inatUrl  = photo?.taxon_id ? `https://www.inaturalist.org/taxa/${photo.taxon_id}` : null;
+---
+
+{photo?.url ? (
+  <figure class="rf-plate">
+    <a href={inatUrl ?? photo.url} target="_blank" rel="noreferrer"
+       aria-label={`Open this photograph on iNaturalist`}>
+      <img
+        src={photo.url}
+        alt={commonName ? `${commonName} (${scientificName})` : scientificName}
+        loading="eager"
+        decoding="async"
+      />
+    </a>
+
+    <figcaption>
+      <div class="rf-plate-caption">
+        <span class="label">Plate</span>
+        {meta.who && (
+          <span class="text-ink-2">photograph · {meta.who}</span>
+        )}
+        {licLabel && licUrl && (
+          <a href={licUrl} target="_blank" rel="noreferrer" class="link-hover text-ink-3">
+            {licLabel}
+          </a>
+        )}
+        {inatUrl && (
+          <a href={inatUrl} target="_blank" rel="noreferrer" class="link-hover text-ink-3">
+            source · iNaturalist ↗
+          </a>
+        )}
+      </div>
+    </figcaption>
+  </figure>
+) : (
+  <figure class="rf-plate rf-plate-empty">
+    <div class="rf-plate-empty-inner" aria-hidden="true">
+      <span class="text-ink-3 text-3xl">⚘</span>
+    </div>
+    <figcaption>
+      <div class="rf-plate-caption">
+        <span class="label">Plate</span>
+        <span class="text-ink-3 italic">No public-domain or CC photograph located.</span>
+      </div>
+    </figcaption>
+  </figure>
+)}
+
+<style>
+  .rf-plate {
+    margin: 0;
+    /* Frame the image like a herbarium specimen mount. */
+    background: var(--rf-paper);
+    border: 1px solid var(--rf-rule-strong);
+    padding: 0;
+    position: relative;
+  }
+  .rf-plate img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+    background: var(--rf-surface);
+  }
+  .rf-plate-empty-inner {
+    aspect-ratio: 4 / 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      linear-gradient(135deg, var(--rf-surface) 25%, transparent 25%, transparent 50%, var(--rf-surface) 50%, var(--rf-surface) 75%, transparent 75%, transparent),
+      var(--rf-paper);
+    background-size: 16px 16px;
+  }
+  .rf-plate-caption {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.25rem;
+    align-items: baseline;
+    padding: 0.65rem 0.9rem;
+    border-top: 1px solid var(--rf-rule);
+    font-size: 0.78rem;
+    line-height: 1.45;
+  }
+  .rf-plate a img { transition: opacity 200ms ease; }
+  .rf-plate a:hover img { opacity: 0.93; }
+</style>

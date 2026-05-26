@@ -1,0 +1,312 @@
+/* @import must precede all other CSS rules per spec — fonts first. */
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =====================================================================
+   ROOTFAST — design system
+   A digital herbarium aesthetic.
+   Fonts: EB Garamond (serif), Atkinson Hyperlegible (sans), IBM Plex Mono.
+   ===================================================================== */
+
+:root {
+  /* Paper & ink palette */
+  --rf-paper:           #FAF6EE;  /* warm off-white — aged book paper */
+  --rf-surface:         #F2EDDF;  /* slightly darker raised surfaces */
+  --rf-ink:             #1A1815;  /* iron-gall body text */
+  --rf-ink-2:           #3A3530;
+  --rf-ink-3:           #6B6256;
+  --rf-rule:            rgba(26, 24, 21, 0.18);
+  --rf-rule-strong:     rgba(26, 24, 21, 0.35);
+
+  /* Botanical accents */
+  --rf-native:          #2D4F1E;  /* deep forest */
+  --rf-native-soft:     #EAEFE2;  /* very pale tint */
+  --rf-introduced:      #8A4527;  /* oxidized rust */
+  --rf-introduced-soft: #F2E6DC;
+  --rf-warn:            #8B6B1E;
+
+  /* Type scale helpers */
+  --rf-leading-tight: 1.08;
+  --rf-leading-body:  1.6;
+}
+
+/* -----  Reset / base ----------------------------------------------- */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; padding: 0; }
+
+html {
+  background: var(--rf-paper);
+  color: var(--rf-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Tabular numbers everywhere — data densities benefit from it */
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+body {
+  font-family: 'Atkinson Hyperlegible', system-ui, sans-serif;
+  font-size: 0.95rem;
+  line-height: var(--rf-leading-body);
+  min-height: 100vh;
+  position: relative;
+
+  /* Subtle paper-grain background */
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(26, 24, 21, 0.025) 1px, transparent 0),
+    linear-gradient(180deg, rgba(255, 248, 232, 0.4) 0%, transparent 60%);
+  background-size: 3px 3px, 100% 100%;
+  background-attachment: fixed;
+}
+
+/* Soft vignette so the page feels like a leaf of paper */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 0%, rgba(122, 95, 50, 0.04), transparent 70%),
+    radial-gradient(ellipse 100% 100% at 50% 100%, rgba(26, 24, 21, 0.04), transparent 60%);
+  z-index: 0;
+}
+
+/* Selection — botanical green */
+::selection { background: rgba(45, 79, 30, 0.18); color: var(--rf-ink); }
+
+/* -----  Type rules ------------------------------------------------- */
+
+h1, h2, h3, h4 {
+  font-family: 'EB Garamond', Garamond, serif;
+  font-weight: 500;
+  color: var(--rf-ink);
+  line-height: var(--rf-leading-tight);
+  margin: 0;
+}
+
+a { color: inherit; }
+a:hover { color: var(--rf-native); }
+
+p { margin: 0; }
+
+/* -----  Reusable utilities ----------------------------------------- */
+
+/* Small-caps section label: §1 · MORPHOLOGY etc. */
+.label {
+  font-family: 'Atkinson Hyperlegible', sans-serif;
+  font-weight: 700;
+  font-size: 0.69rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--rf-ink-3);
+}
+
+/* Latin-name styling for scientific names. Italic Garamond. */
+.sci {
+  font-family: 'EB Garamond', serif;
+  font-style: italic;
+  font-weight: 500;
+}
+
+.sci-auth {
+  font-family: 'EB Garamond', serif;
+  font-style: normal;
+  font-weight: 400;
+  color: var(--rf-ink-2);
+  font-size: 0.82em;
+  margin-left: 0.4em;
+}
+
+/* Inline code / data identifiers */
+code, .mono {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.85em;
+  color: var(--rf-ink-2);
+  background: var(--rf-surface);
+  padding: 0.05em 0.4em;
+  border-radius: 1px;
+  border: 1px solid var(--rf-rule);
+}
+
+/* Hairline rule between sections */
+.rule {
+  border: 0;
+  border-top: 1px solid var(--rf-rule);
+  margin: 0;
+}
+
+/* Heavier rule for major divisions */
+.rule-strong {
+  border: 0;
+  border-top: 1px solid var(--rf-rule-strong);
+  margin: 0;
+}
+
+/* Section number in margin (§1) */
+.section-num {
+  font-family: 'EB Garamond', serif;
+  font-style: italic;
+  color: var(--rf-ink-3);
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+}
+
+/* Asterism divider (⁂) — used to break sections */
+.asterism {
+  display: block;
+  text-align: center;
+  color: var(--rf-ink-3);
+  font-size: 1.1rem;
+  line-height: 1;
+  margin: 2.5rem 0;
+  letter-spacing: 0.5em;
+  user-select: none;
+}
+.asterism::before { content: '⁂'; }
+
+/* Nativity pill */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.15em 0.55em;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-family: 'Atkinson Hyperlegible', sans-serif;
+  border: 1px solid var(--rf-rule-strong);
+  background: var(--rf-paper);
+  color: var(--rf-ink);
+}
+.pill::before {
+  content: '';
+  width: 0.4em; height: 0.4em;
+  border-radius: 999px;
+  background: currentColor;
+  display: inline-block;
+}
+.pill-native      { color: var(--rf-native);      background: var(--rf-native-soft);      border-color: var(--rf-native); }
+.pill-introduced  { color: var(--rf-introduced);  background: var(--rf-introduced-soft);  border-color: var(--rf-introduced); }
+.pill-both        { color: var(--rf-ink-2); }
+
+/* Link underline that fades in */
+.link-hover {
+  position: relative;
+  text-decoration: none;
+}
+.link-hover::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -2px;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 200ms ease;
+}
+.link-hover:hover::after { transform: scaleX(1); }
+
+/* Focus ring — botanical green */
+:focus-visible {
+  outline: 2px solid var(--rf-native);
+  outline-offset: 2px;
+}
+
+/* Tabular numeric data grid (cells) */
+.field-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) 1fr;
+  gap: 0.5rem 1.5rem;
+  font-size: 0.875rem;
+}
+.field-grid dt {
+  color: var(--rf-ink-3);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+.field-grid dd {
+  margin: 0;
+  color: var(--rf-ink);
+}
+
+/* Input field — minimal, herbarium-style */
+.input {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rf-rule-strong);
+  padding: 0.6rem 0.2rem;
+  font-family: 'EB Garamond', serif;
+  font-size: 1.25rem;
+  color: var(--rf-ink);
+  transition: border-color 150ms ease;
+}
+.input::placeholder { color: var(--rf-ink-3); font-style: italic; }
+.input:focus { outline: none; border-bottom-color: var(--rf-native); }
+
+/* Button — hairline-ruled, like a small caps stamp */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.55rem 1rem;
+  font-family: 'Atkinson Hyperlegible', sans-serif;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rf-ink);
+  background: transparent;
+  border: 1px solid var(--rf-ink);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.btn:hover {
+  background: var(--rf-ink);
+  color: var(--rf-paper);
+}
+.btn-native {
+  border-color: var(--rf-native);
+  color: var(--rf-native);
+}
+.btn-native:hover {
+  background: var(--rf-native);
+  color: var(--rf-paper);
+}
+
+/* Code block (for docs).
+   pre-wrap preserves newlines + indentation but soft-wraps long lines;
+   overflow-wrap: anywhere lets long URLs break at any character. */
+.code-block {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--rf-ink);
+  background: var(--rf-surface);
+  border: 1px solid var(--rf-rule);
+  padding: 1rem 1.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+/* Page fade-in on load (subtle) */
+@keyframes rf-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
+}
+main { animation: rf-fade-in 420ms ease-out both; }
+
+/* Reduce motion — respect user preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

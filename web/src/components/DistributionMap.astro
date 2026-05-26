@@ -1,0 +1,203 @@
+---
+import type { CountyPresence } from '@/lib/api';
+
+interface Props {
+  /** Every county where the plant has been recorded, with nativity. */
+  counties: CountyPresence[];
+  /** Optional tally summary so we don't have to recompute client-side. */
+  tally?: { Native: number; Introduced: number; Both: number };
+}
+
+const { counties, tally } = Astro.props;
+
+// Compact payload — the only fields the script touches.
+const compact = counties.map(c => ({ f: c.county_fips, n: c.nativity, m: c.county_name }));
+const dataAttr = JSON.stringify(compact);
+
+const tally_ = tally ?? {
+  Native: counties.filter(c => c.nativity === 'Native').length,
+  Introduced: counties.filter(c => c.nativity === 'Introduced').length,
+  Both: counties.filter(c => c.nativity === 'Both').length,
+};
+const totalShown = counties.length;
+---
+
+<figure class="rf-distmap" data-rf-distmap data-counties={dataAttr}>
+  <div class="rf-distmap-shell" aria-hidden="true">
+    <div class="rf-distmap-skeleton">
+      <div class="rf-distmap-spinner" aria-hidden="true"></div>
+      <span class="label">loading map…</span>
+    </div>
+  </div>
+
+  {totalShown > 0 ? (
+    <figcaption class="mt-3 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs text-ink-3">
+      <span class="label">Legend</span>
+      <span class="flex items-center gap-1.5">
+        <span class="rf-swatch rf-swatch-native" aria-hidden="true"></span>
+        Native · <span class="mono text-ink-2">{tally_.Native}</span>
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="rf-swatch rf-swatch-introduced" aria-hidden="true"></span>
+        Introduced · <span class="mono text-ink-2">{tally_.Introduced}</span>
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="rf-swatch rf-swatch-both" aria-hidden="true"></span>
+        Both · <span class="mono text-ink-2">{tally_.Both}</span>
+      </span>
+      <span class="ml-auto italic">Hover a county for detail.</span>
+    </figcaption>
+  ) : (
+    <figcaption class="mt-3 text-xs text-ink-3 italic">
+      No recorded county-level distribution.
+    </figcaption>
+  )}
+
+  <div class="rf-distmap-hover mono text-xs text-ink-2" aria-live="polite" hidden></div>
+</figure>
+
+<script>
+  type Compact = { f: string; n: 'Native' | 'Introduced' | 'Both'; m: string };
+
+  async function hydrate(root: HTMLElement) {
+    const shell = root.querySelector<HTMLDivElement>('.rf-distmap-shell');
+    const hoverEl = root.querySelector<HTMLDivElement>('.rf-distmap-hover');
+    if (!shell) return;
+
+    let counties: Compact[] = [];
+    try {
+      counties = JSON.parse(root.dataset.counties || '[]');
+    } catch { counties = []; }
+
+    // Fetch + cache the SVG (browser caches it across page loads).
+    let svgText: string;
+    try {
+      const resp = await fetch('/usa-counties.svg', { cache: 'force-cache' });
+      if (!resp.ok) throw new Error(String(resp.status));
+      svgText = await resp.text();
+    } catch (err) {
+      shell.innerHTML = '<p class="text-xs italic text-ink-3 p-4">Map unavailable.</p>';
+      return;
+    }
+
+    shell.innerHTML = svgText;
+    const svg = shell.querySelector<SVGSVGElement>('svg');
+    if (!svg) return;
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.setAttribute('viewBox', '0 0 990 628');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.classList.add('rf-distmap-svg');
+
+    // Apply nativity classes.
+    const byFips = new Map<string, Compact>();
+    for (const c of counties) byFips.set(c.f, c);
+    for (const c of counties) {
+      const path = svg.querySelector<SVGPathElement>(`#c${c.f}`);
+      if (path) {
+        path.classList.add(`rf-fill-${c.n.toLowerCase()}`);
+      }
+    }
+
+    // Hover behavior — show FIPS + nativity. Avoid one listener per path
+    // by delegating on the SVG.
+    if (hoverEl) {
+      svg.addEventListener('mouseover', (e) => {
+        const t = e.target as Element;
+        if (!(t instanceof SVGPathElement)) return;
+        const id = t.id;
+        if (!id || !id.startsWith('c')) return;
+        const fips = id.slice(1);
+        const hit = byFips.get(fips);
+        hoverEl.hidden = false;
+        if (hit) {
+          hoverEl.textContent = `${hit.m} County · FIPS ${fips} · ${hit.n}`;
+        } else {
+          hoverEl.textContent = `FIPS ${fips} · not recorded`;
+        }
+      });
+      svg.addEventListener('mouseleave', () => {
+        if (hoverEl) { hoverEl.hidden = true; hoverEl.textContent = ''; }
+      });
+    }
+  }
+
+  for (const root of document.querySelectorAll<HTMLElement>('[data-rf-distmap]')) {
+    void hydrate(root);
+  }
+</script>
+
+<style is:global>
+  .rf-distmap-shell {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 990 / 628;
+    background: var(--rf-paper);
+    border: 1px solid var(--rf-rule);
+    overflow: hidden;
+  }
+
+  /* Skeleton while SVG loads */
+  .rf-distmap-skeleton {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    color: var(--rf-ink-3);
+  }
+  .rf-distmap-spinner {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--rf-native);
+    animation: rf-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes rf-pulse {
+    0%,100% { opacity: 0.3; transform: scale(1); }
+    50%     { opacity: 1.0; transform: scale(1.4); }
+  }
+
+  /* SVG itself */
+  .rf-distmap-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  /* Default fill for every county path */
+  .rf-distmap-svg path[id^="c"] {
+    fill: var(--rf-surface);
+    stroke: var(--rf-rule);
+    stroke-width: 0.3;
+    transition: fill 100ms ease;
+  }
+  .rf-distmap-svg path[id^="c"]:hover {
+    stroke: var(--rf-ink);
+    stroke-width: 0.6;
+  }
+  /* Nativity overrides */
+  .rf-distmap-svg path.rf-fill-native      { fill: var(--rf-native); }
+  .rf-distmap-svg path.rf-fill-introduced  { fill: var(--rf-introduced); }
+  .rf-distmap-svg path.rf-fill-both        { fill: #6E5A30; } /* warm olive — between native + introduced */
+  /* AK/HI separator stays visible */
+  .rf-distmap-svg path#separatorAK-HI {
+    stroke: var(--rf-rule-strong);
+    stroke-width: 0.7;
+    fill: none;
+  }
+
+  /* Legend swatches */
+  .rf-swatch {
+    display: inline-block;
+    width: 0.7rem; height: 0.7rem;
+    border: 1px solid var(--rf-rule-strong);
+  }
+  .rf-swatch-native     { background: var(--rf-native); }
+  .rf-swatch-introduced { background: var(--rf-introduced); }
+  .rf-swatch-both       { background: #6E5A30; }
+
+  /* Hover detail */
+  .rf-distmap-hover {
+    margin-top: 0.5rem;
+    min-height: 1rem;
+  }
+</style>
