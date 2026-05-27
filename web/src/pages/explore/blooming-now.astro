@@ -2,6 +2,10 @@
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { api, ApiError, type PlantsListResponse } from '@/lib/api';
 
+// Content rotates with the calendar month. Short edge cache keeps month
+// transitions crisp without rerendering on every request inside a month.
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=10800');
+
 // Month → USDA `bloom_period` value(s) it overlaps with. Conservative — most
 // months touch two adjacent USDA period labels, so we OR them together.
 const MONTH_MAP: Record<number, { name: string; periods: string[] }> = {

@@ -2,6 +2,9 @@
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { api, ApiError, type PlantsListResponse, type HardinessByZipResponse } from '@/lib/api';
 
+// Results depend on `?zip=` (+ pagination) — fully URL-keyed, cache at edge.
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
+
 const urlParams = Astro.url.searchParams;
 const rawZip = (urlParams.get('zip') || '').replace(/[^0-9]/g, '').slice(0, 5);
 const zipOk  = rawZip.length === 5;

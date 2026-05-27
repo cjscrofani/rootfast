@@ -4,9 +4,12 @@ import SearchIsland from '@/components/SearchIsland.astro';
 
 const url = new URL(Astro.request.url);
 const initial = url.searchParams.get('q') ?? '';
+
+// Search result HTML depends only on `?q=`; safe to cache at the edge.
+Astro.response.headers.set('cache-control', 'public, max-age=300, s-maxage=3600');
 ---
 
-<BaseLayout title="Search — rootfast" description="Locate a taxon by scientific or common name.">
+<BaseLayout title="Search — rootfast" description="Locate a taxon by scientific or common name." noindex>
   <section class="max-w-content mx-auto px-6 lg:px-10 pt-12 pb-6">
     <p class="label flex items-baseline gap-3"><span>§1</span><span>Search the catalogue</span></p>
     <h1 class="mt-5 font-serif text-4xl sm:text-5xl text-ink leading-none tracking-tight">

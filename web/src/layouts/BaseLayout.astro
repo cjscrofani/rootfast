@@ -7,13 +7,24 @@ export interface Props {
   title?: string;
   description?: string;
   noFooter?: boolean;
+  /** Override the OG type, defaults to "website". Use "article" for plant/species pages. */
+  ogType?: 'website' | 'article';
+  /** Mark a page as non-indexable (search results, etc.). */
+  noindex?: boolean;
 }
 
 const {
   title = 'rootfast — a digital herbarium',
-  description = 'Native plant data for the United States. Free, public-domain, fully queryable. 27,665 taxa nationwide, joined with USDA hardiness zones and iNaturalist photos.',
+  description = 'Native plant data for the United States. Free, public-domain, fully queryable. 27,665 taxa with USDA hardiness zones and iNaturalist photos.',
   noFooter = false,
+  ogType = 'website',
+  noindex = false,
 } = Astro.props;
+
+// Astro.site is set in astro.config.mjs; fall back to the production origin so
+// canonical/OG URLs still render correctly in `astro dev` previews.
+const siteOrigin = (Astro.site ?? new URL('https://rootfast.org')).origin;
+const canonical = new URL(Astro.url.pathname, siteOrigin).toString();
 ---
 
 <!doctype html>
@@ -24,9 +35,26 @@ const {
     <title>{title}</title>
     <meta name="description" content={description} />
     <meta name="theme-color" content="#FAF6EE" />
+    <link rel="canonical" href={canonical} />
+    {noindex && <meta name="robots" content="noindex, follow" />}
+
+    <!-- Open Graph -->
+    <meta property="og:type" content={ogType} />
+    <meta property="og:site_name" content="rootfast" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <slot name="head" />
   </head>
   <body>
     <div class="relative z-10 flex min-h-screen flex-col">

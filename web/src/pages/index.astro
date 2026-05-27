@@ -1,4 +1,6 @@
 ---
+export const prerender = true;
+
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import SearchIsland from '@/components/SearchIsland.astro';
 import { api, type HealthResponse } from '@/lib/api';
@@ -30,6 +32,24 @@ const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
   title="rootfast — native plants of the United States, queryable"
   description="A free, public-domain plant API and the website that browses it. Built from USDA PLANTS, USDA hardiness zones, iNaturalist photos, and the GBIF taxonomic backbone. 27,665 taxa across 54 states and territories."
 >
+  <Fragment slot="head">
+    <script type="application/ld+json" is:inline set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "rootfast",
+      "alternateName": "rootfast — a digital herbarium",
+      "url": "https://rootfast.org",
+      "description": "Free, public-domain native plant data for the United States. 27,665 taxa joined with USDA hardiness zones and iNaturalist photos.",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": {
+          "@type": "EntryPoint",
+          "urlTemplate": "https://rootfast.org/search?q={search_term_string}"
+        },
+        "query-input": "required name=search_term_string"
+      }
+    })} />
+  </Fragment>
   <!-- Hero — restrained editorial, no marketing fluff -->
   <section class="max-w-content mx-auto px-6 lg:px-10 pt-16 sm:pt-24 pb-14">
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-16 items-start">

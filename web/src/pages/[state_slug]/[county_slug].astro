@@ -5,6 +5,8 @@ import {
   stateCodeOfSlug, stateNameOf, stateSlugOf, slugifyCounty,
 } from '@/lib/states';
 
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
+
 const { state_slug, county_slug } = Astro.params;
 if (!state_slug || !county_slug) {
   return new Response('state and county slug required', { status: 400 });
@@ -109,9 +111,10 @@ function qs(overrides: Record<string, string | null>): string {
 }
 
 const title = `${county.county_name} County, ${stateName} — rootfast`;
+const description = `Native plants of ${county.county_name} County, ${stateName}: ${totalUnfilteredCount.toLocaleString('en-US')} taxa from USDA PLANTS, with USDA hardiness zone and iNaturalist photo coverage.`;
 ---
 
-<BaseLayout title={title}>
+<BaseLayout title={title} description={description}>
   <article class="max-w-content mx-auto px-6 lg:px-10">
     <p class="pt-6 text-xs text-ink-3">
       <a href="/" class="link-hover">Index</a>

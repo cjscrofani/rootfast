@@ -5,6 +5,7 @@ import tailwind from '@astrojs/tailwind';
 
 // https://astro.build/config
 export default defineConfig({
+  site: 'https://rootfast.org',
   output: 'server',
   adapter: cloudflare({
     platformProxy: { enabled: true },

@@ -8,6 +8,8 @@ import {
   stateNameOf, regionOf, stateCodeOfSlug, stateSlugOf, slugifyCounty,
 } from '@/lib/states';
 
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
+
 const { state_slug } = Astro.params;
 if (!state_slug) {
   return new Response('state slug required', { status: 400 });

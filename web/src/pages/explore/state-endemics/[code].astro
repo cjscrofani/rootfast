@@ -3,6 +3,8 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
 import { api, ApiError, type StateEndemicTaxaResponse } from '@/lib/api';
 import { stateCodeOfSlug, stateSlugOf, stateNameOf } from '@/lib/states';
 
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
+
 const { code } = Astro.params;
 if (!code) return new Response('state code required', { status: 400 });
 

@@ -2,6 +2,8 @@
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import { api, ApiError, type PlantsListResponse } from '@/lib/api';
 
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
+
 const { name } = Astro.params;
 if (!name) return new Response('family name required', { status: 400 });
 

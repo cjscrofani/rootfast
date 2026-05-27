@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Internal/utility routes — content is fine to crawl but adds no SEO value.
+Disallow: /search
+
+Sitemap: https://rootfast.org/sitemap.xml

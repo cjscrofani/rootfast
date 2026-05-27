@@ -3,6 +3,9 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
 import { api, ApiError, type PlantsListResponse } from '@/lib/api';
 import { EXPLORE_BY_SLUG } from '@/lib/explore';
 
+// List + page + sort all live in the URL — safe to cache the rendered HTML.
+Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
+
 const { slug } = Astro.params;
 if (!slug) return new Response('slug required', { status: 400 });
 
