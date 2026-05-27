@@ -1,0 +1,227 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, type SoilCountyRow } from '@/lib/api';
+
+import countySvg from '../../../public/usa-counties.svg?raw';
+
+let counties: SoilCountyRow[] = [];
+let error: string | null = null;
+try {
+  const r = await api.soilCounties();
+  counties = r.counties;
+} catch {
+  error = 'Could not load soil-coverage data right now.';
+}
+
+// USDA soil-triangle classes, ramped from sandy (warm) to clay (cool).
+// Order matters for the legend; colours roughly follow Soil Survey Manual conventions.
+interface Tex { label: string; color: string; }
+const TEXTURE_ORDER: Tex[] = [
+  { label: 'Sand',             color: '#F2DEAA' },
+  { label: 'Loamy sand',       color: '#E8C780' },
+  { label: 'Sandy loam',       color: '#D9B26B' },
+  { label: 'Loam',             color: '#B89E63' },
+  { label: 'Silt loam',        color: '#A8C283' },
+  { label: 'Silt',             color: '#86B097' },
+  { label: 'Sandy clay loam',  color: '#9B7E5B' },
+  { label: 'Clay loam',        color: '#876854' },
+  { label: 'Silty clay loam',  color: '#6E7A6A' },
+  { label: 'Sandy clay',       color: '#6D5544' },
+  { label: 'Silty clay',       color: '#4E5B53' },
+  { label: 'Clay',             color: '#3F4742' },
+];
+const COLOR_BY_TEX = new Map(TEXTURE_ORDER.map(t => [t.label, t.color]));
+
+const cssRules = counties
+  .map(c => {
+    const tex = c.texture_class;
+    const color = tex ? COLOR_BY_TEX.get(tex) : null;
+    return color ? `#c${c.county_fips}{fill:${color};}` : '';
+  })
+  .filter(Boolean)
+  .join('');
+
+const wallCss = `#counties path{stroke:rgba(26,24,21,0.20);stroke-width:0.25;}`;
+
+const hoverPayload = JSON.stringify(
+  counties.map(c => ({
+    f: c.county_fips, m: c.county_name, s: c.state_code,
+    tx: c.texture_class, dr: c.drainage_class, ph: c.surface_ph, sl: c.slope_pct,
+    mu: c.muname,
+  }))
+);
+
+// Per-texture count for legend
+const texCounts = TEXTURE_ORDER.map(t => ({
+  texture: t,
+  count: counties.filter(c => c.texture_class === t.label).length,
+}));
+const unclassified = counties.filter(c => !c.texture_class || !COLOR_BY_TEX.has(c.texture_class)).length;
+---
+
+<BaseLayout
+  title="National soil-texture map — rootfast"
+  description="Every US county coloured by its USDA-SSURGO surface soil texture class."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Hardiness &amp; climate</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">National soil-texture map</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Hardiness &amp; climate</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        National soil-texture map
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Every US county rendered at its USDA-SSURGO surface soil texture — the
+        sand / silt / clay mix of the topsoil at the county's centroid.
+        Sand-rich tans, silty greens, and clay-heavy greys.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">Counties sampled</dt>
+          <dd class="mt-1 mono">{counties.length.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Distinct textures</dt>
+          <dd class="mt-1 mono">{texCounts.filter(t => t.count > 0).length}</dd>
+        </div>
+        <div>
+          <dt class="label">Source</dt>
+          <dd class="mt-1 mono text-ink-3">USDA-NRCS SSURGO</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono">
+            <a class="link-hover" href="/docs#listSoilByCounty">/v1/soil/counties</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    {error && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{error}</p>
+    )}
+
+    {!error && counties.length > 0 && (
+      <section class="py-7">
+        <div class="rf-soilmap-card border border-rule bg-paper">
+          <div
+            class="rf-map-wrap"
+            data-rf-soilmap
+            data-counties={hoverPayload}
+            set:html={countySvg}
+          />
+
+          <div class="rf-soilmap-legend">
+            <div class="flex items-baseline justify-between gap-4 mb-3">
+              <p class="label">Legend</p>
+              <span class="text-xs text-ink-3 italic">Hover a county for detail.</span>
+            </div>
+            <div class="rf-soilmap-hover mono text-xs text-ink-2 mb-3" aria-live="polite" hidden></div>
+            <ul class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 text-sm">
+              {texCounts.map(({ texture, count }) => (
+                <li class="flex items-center gap-3 border border-rule bg-paper px-3 py-2">
+                  <span
+                    class="inline-block w-4 h-4 border border-rule shrink-0"
+                    style={`background:${texture.color}`}
+                    aria-hidden="true"
+                  ></span>
+                  <span class="font-serif text-sm text-ink leading-none">{texture.label}</span>
+                  <span class="ml-auto text-xs text-ink-3 mono">{count.toLocaleString('en-US')}</span>
+                </li>
+              ))}
+              {unclassified > 0 && (
+                <li class="flex items-center gap-3 border border-rule bg-paper px-3 py-2">
+                  <span
+                    class="inline-block w-4 h-4 border border-rule shrink-0"
+                    style="background:#faf6ee"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="font-serif text-sm text-ink-3 leading-none italic">no soil sample</span>
+                  <span class="ml-auto text-xs text-ink-3 mono">{unclassified.toLocaleString('en-US')}</span>
+                </li>
+              )}
+            </ul>
+            <p class="mt-4 text-xs text-ink-3 italic">
+              Centroid-sampled. Each county shows the texture of the soil at one
+              point — large or shape-irregular counties (Alaska boroughs, the
+              western interior, water-heavy coastal jurisdictions) may not be
+              representative across the whole area. For a per-address profile
+              use the SDA REST API directly.
+            </p>
+          </div>
+        </div>
+      </section>
+    )}
+  </article>
+
+  <style set:html={`${wallCss}${cssRules}`} is:global />
+
+  <style is:global>
+    .rf-map-wrap svg { display: block; width: 100%; height: auto; max-height: 80vh; }
+    .rf-map-wrap svg path { fill: #faf6ee; transition: fill 80ms ease; }
+    .rf-map-wrap svg path:hover { fill-opacity: 0.7; }
+    .rf-soilmap-legend { padding: 0.85rem 1rem 1rem; border-top: 1px solid var(--rf-rule); }
+    .rf-soilmap-hover { min-height: 1.1rem; }
+    .rf-soilmap-hover[hidden] { display: block !important; visibility: hidden; }
+  </style>
+
+  <script>
+    type HoverRow = {
+      f: string; m: string; s: string;
+      tx: string | null; dr: string | null; ph: number | null; sl: number | null;
+      mu: string | null;
+    };
+    for (const root of document.querySelectorAll<HTMLElement>('[data-rf-soilmap]')) {
+      let rows: HoverRow[] = [];
+      try { rows = JSON.parse(root.dataset.counties || '[]'); } catch { rows = []; }
+      const byFips = new Map<string, HoverRow>();
+      for (const r of rows) byFips.set(r.f, r);
+
+      const svg = root.querySelector<SVGSVGElement>('svg');
+      const hoverEl = document.querySelector<HTMLDivElement>('.rf-soilmap-hover');
+      if (!svg || !hoverEl) continue;
+
+      svg.addEventListener('mouseover', (e) => {
+        const t = e.target as Element;
+        if (!(t instanceof SVGPathElement)) return;
+        const id = t.id;
+        if (!id || !id.startsWith('c')) return;
+        const fips = id.slice(1);
+        const hit = byFips.get(fips);
+        hoverEl.hidden = false;
+        if (hit) {
+          const parts = [
+            `${hit.m} County, ${hit.s}`,
+            `FIPS ${fips}`,
+            hit.tx ? hit.tx : 'no texture',
+            hit.dr ? hit.dr.toLowerCase() : null,
+            hit.ph !== null ? `pH ${hit.ph}` : null,
+            hit.sl !== null ? `${hit.sl}% slope` : null,
+          ].filter(Boolean);
+          hoverEl.textContent = parts.join(' · ');
+        } else {
+          hoverEl.textContent = `FIPS ${fips} · no soil sample`;
+        }
+      });
+      svg.addEventListener('mouseleave', () => {
+        hoverEl.hidden = true;
+        hoverEl.textContent = '';
+      });
+    }
+  </script>
+</BaseLayout>

@@ -102,17 +102,30 @@ async function routeRequest(req: Request, env: Env): Promise<Response> {
         if (!parts[2]) {
           return await listCounties(env, url);
         }
+        if (parts[2] === "taxa-counts" && !parts[3]) {
+          return await listCountyTaxaCounts(env, url);
+        }
+        if (parts[2] === "photo-coverage" && !parts[3]) {
+          return await listCountyPhotoCoverage(env, url);
+        }
         if (parts[2] && parts[3] === "plants") {
           return await plantsByCounty(env, parts[2], url);
         }
       }
 
+      // /v1/families
+      if (parts[1] === "families" && !parts[2]) {
+        return await listFamilies(env);
+      }
+
       // /v1/states[...]
       if (parts[1] === "states") {
         if (!parts[2]) return await listStates(env);
+        if (parts[2] === "endemics" && !parts[3]) return await listStateEndemicCounts(env);
         if (parts[2] && !parts[3]) return await stateHeader(env, parts[2]);
-        if (parts[2] && parts[3] === "plants")   return await plantsByState(env, parts[2], url);
-        if (parts[2] && parts[3] === "counties") return await countiesByState(env, parts[2]);
+        if (parts[2] && parts[3] === "plants")        return await plantsByState(env, parts[2], url);
+        if (parts[2] && parts[3] === "counties")      return await countiesByState(env, parts[2]);
+        if (parts[2] && parts[3] === "endemic-taxa")  return await endemicTaxaByState(env, parts[2], url);
       }
 
       // /v1/search?q=
@@ -122,10 +135,17 @@ async function routeRequest(req: Request, env: Env): Promise<Response> {
 
       // /v1/hardiness/...
       if (parts[1] === "hardiness") {
-        if (parts[2] === "zones" && !parts[3])              return await listHardinessZones(env);
-        if (parts[2] === "zones" && parts[3] && !parts[4])  return await hardinessZone(env, parts[3]);
-        if (parts[2] === "zip"   && parts[3] && !parts[4])  return await hardinessByZip(env, parts[3]);
-        if (parts[2] === "county" && parts[3] && !parts[4]) return await hardinessByCounty(env, parts[3]);
+        if (parts[2] === "zones"    && !parts[3])           return await listHardinessZones(env);
+        if (parts[2] === "zones"    && parts[3] && !parts[4]) return await hardinessZone(env, parts[3]);
+        if (parts[2] === "counties" && !parts[3])           return await listHardinessCounties(env, url);
+        if (parts[2] === "zip"      && parts[3] && !parts[4]) return await hardinessByZip(env, parts[3]);
+        if (parts[2] === "county"   && parts[3] && !parts[4]) return await hardinessByCounty(env, parts[3]);
+      }
+
+      // /v1/soil/...
+      if (parts[1] === "soil") {
+        if (parts[2] === "counties" && !parts[3])           return await listSoilByCounty(env, url);
+        if (parts[2] === "county"   && parts[3] && !parts[4]) return await soilByCounty(env, parts[3]);
       }
 
       // OpenAPI spec + Scalar UI
@@ -328,6 +348,7 @@ const GROWTH_RATE       = ["Slow","Moderate","Rapid"] as const;
 const TOXICITY          = ["None","Slight","Moderate","Severe"] as const;
 const LIFESPAN          = ["Short","Moderate","Long"] as const;
 const COMMERCIAL_AVAIL  = ["No Known Source","Routinely Available","Field Collections Only","Contracting Only"] as const;
+const WETLAND_CODES     = ["OBL","FACW","FAC","FACU","UPL","NL"] as const;
 
 function pushEnum(ctx: Ctx, col: string, raw: string, allowed: readonly string[]): boolean {
   const values = raw.split(",").map(v => v.trim()).filter(Boolean);
@@ -400,6 +421,19 @@ function buildFilters(searchParams: URLSearchParams): Ctx | { error: string } {
   if (v("rank")    && (err = eat("rank",    pushEnum(ctx, "p.rank", v("rank")!, RANKS))))   return { error: err };
   if (v("growth_habit") && (err = eat("growth_habit", pushExists(ctx, "plant_growth_habits", "plant_growth_habits.growth_habit", v("growth_habit")!, GROWTH_HABITS)))) return { error: err };
   if (v("duration")     && (err = eat("duration",     pushExists(ctx, "plant_durations",     "plant_durations.duration",         v("duration")!,     DURATIONS))))     return { error: err };
+  if (v("wetland_code") && (err = eat("wetland_code", pushExists(ctx, "plant_wetland_indicators", "plant_wetland_indicators.wetland_code", v("wetland_code")!, WETLAND_CODES)))) return { error: err };
+
+  // bloom_period — free-text vocabulary on plant_characteristics. Accept a
+  // comma-separated list and OR them together; case-insensitive equality.
+  if (v("bloom_period")) {
+    const raw = v("bloom_period")!;
+    const values = raw.split(",").map(s => s.trim()).filter(Boolean);
+    if (values.length === 0) return { error: 'Invalid value for "bloom_period".' };
+    ctx.needsChars = true;
+    const placeholders = values.map(() => "LOWER(?)").join(",");
+    ctx.where.push(`LOWER(pc.bloom_period) IN (${placeholders})`);
+    ctx.binds.push(...values);
+  }
 
   // Distribution-level
   if (v("nativity") && (err = eat("nativity", pushEnum(ctx, "pcd.nativity", v("nativity")!, NATIVITY_VALUES)))) return { error: err };
@@ -506,7 +540,7 @@ function buildFilters(searchParams: URLSearchParams): Ctx | { error: string } {
 /** Echo back the user-supplied filter values (only the ones we recognize)
  *  so clients can read what was actually applied. */
 const FILTER_PARAMS = new Set([
-  "family","genus","rank","growth_habit","duration","nativity",
+  "family","genus","rank","growth_habit","duration","nativity","wetland_code","bloom_period",
   "drought_tolerance","shade_tolerance","moisture_use","growth_rate",
   "toxicity","lifespan","commercial_availability","fire_tolerance",
   "salinity_tolerance","nitrogen_fixation",
@@ -1407,6 +1441,85 @@ function aggregateNativity(native: number, introduced: number, both: number): "N
   return "Native";
 }
 
+/* ----------------------------- Soil ----------------------------- */
+
+/** Bulk: every county with a sampled soil profile. Used by the soil map. */
+async function listSoilByCounty(env: Env, url: URL): Promise<Response> {
+  const state = (url.searchParams.get("state") || "").trim().toUpperCase();
+  if (state && !/^[A-Z]{2}$/.test(state)) {
+    return badRequest(`Invalid state code "${state}".`);
+  }
+  const sql = state
+    ? `SELECT s.county_fips, c.county_name, c.state_code,
+              s.muname, s.dominant_comp, s.drainage_class, s.texture_class,
+              s.surface_ph, s.surface_om_pct, s.slope_pct,
+              s.surface_sand_pct, s.surface_silt_pct, s.surface_clay_pct,
+              s.awc_in_top_25cm
+         FROM soil_by_county s
+         JOIN counties c ON c.county_fips = s.county_fips
+        WHERE c.state_code = ?
+        ORDER BY s.county_fips`
+    : `SELECT s.county_fips, c.county_name, c.state_code,
+              s.muname, s.dominant_comp, s.drainage_class, s.texture_class,
+              s.surface_ph, s.surface_om_pct, s.slope_pct,
+              s.surface_sand_pct, s.surface_silt_pct, s.surface_clay_pct,
+              s.awc_in_top_25cm
+         FROM soil_by_county s
+         JOIN counties c ON c.county_fips = s.county_fips
+        ORDER BY s.county_fips`;
+  const rows = await (state
+    ? env.DB.prepare(sql).bind(state).all()
+    : env.DB.prepare(sql).all());
+  const counties = rows.results ?? [];
+  return json({ count: counties.length, counties }, 200, "long");
+}
+
+/** Single county soil profile. */
+async function soilByCounty(env: Env, raw: string): Promise<Response> {
+  const fips = raw.trim().padStart(5, "0");
+  if (!/^[0-9]{5}$/.test(fips)) {
+    return badRequest(`Invalid county FIPS "${raw}". Expected 5 digits.`);
+  }
+  const row = await env.DB.prepare(
+    `SELECT s.*, c.county_name, c.state_code
+       FROM soil_by_county s
+       JOIN counties c ON c.county_fips = s.county_fips
+      WHERE s.county_fips = ?`
+  ).bind(fips).first();
+  if (!row) {
+    // Distinguish "county exists but no soil" from "no such county".
+    const cty = await env.DB.prepare(
+      "SELECT county_fips, county_name, state_code FROM counties WHERE county_fips = ?"
+    ).bind(fips).first();
+    if (cty) {
+      return json({
+        county: cty,
+        soil: null,
+        note: "County exists but no SSURGO sample at its centroid (territory or water-heavy geometry).",
+      }, 200, "long");
+    }
+    return notFound(`No county with FIPS "${fips}".`);
+  }
+  const r = row as Record<string, unknown>;
+  return json({
+    county: { county_fips: r['county_fips'], county_name: r['county_name'], state_code: r['state_code'] },
+    soil: {
+      mukey:            r['mukey'],
+      muname:           r['muname'],
+      dominant_comp:    r['dominant_comp'],
+      drainage_class:   r['drainage_class'],
+      texture_class:    r['texture_class'],
+      slope_pct:        r['slope_pct'],
+      surface_ph:       r['surface_ph'],
+      surface_om_pct:   r['surface_om_pct'],
+      surface_sand_pct: r['surface_sand_pct'],
+      surface_silt_pct: r['surface_silt_pct'],
+      surface_clay_pct: r['surface_clay_pct'],
+      awc_in_top_25cm:  r['awc_in_top_25cm'],
+    },
+  }, 200, "long");
+}
+
 /* ------------------------- OpenAPI / Scalar UI ------------------------ */
 
 function openapiJson(): Response {
@@ -1519,6 +1632,202 @@ async function hardinessByZip(env: Env, raw: string): Promise<Response> {
       temp_max_f:       row.temp_max_f,
       description:      row.description,
     },
+  }, 200, "long");
+}
+
+/** Bulk: every county with its taxa count. Used by the biodiversity-by-county
+ *  map visualization. Returns all ~3,227 US counties in one response. */
+async function listCountyTaxaCounts(env: Env, url: URL): Promise<Response> {
+  const state = (url.searchParams.get("state") || "").trim().toUpperCase();
+  if (state && !/^[A-Z]{2}$/.test(state)) {
+    return badRequest(`Invalid state code "${state}". Use the two-letter USPS code.`);
+  }
+  const sql = state
+    ? `SELECT c.county_fips, c.county_name, c.state_code,
+              (SELECT COUNT(DISTINCT plant_id) FROM plant_county_distribution pcd
+                WHERE pcd.county_fips = c.county_fips) AS taxa_count
+         FROM counties c
+        WHERE c.state_code = ?
+        ORDER BY c.county_fips`
+    : `SELECT c.county_fips, c.county_name, c.state_code,
+              (SELECT COUNT(DISTINCT plant_id) FROM plant_county_distribution pcd
+                WHERE pcd.county_fips = c.county_fips) AS taxa_count
+         FROM counties c
+        ORDER BY c.county_fips`;
+  const rows = await (state
+    ? env.DB.prepare(sql).bind(state).all()
+    : env.DB.prepare(sql).all());
+  const counties = rows.results ?? [];
+  return json({ count: counties.length, counties }, 200, "long");
+}
+
+/** Per-county photo coverage: total taxa, taxa with photos, percentage.
+ *  Used by /explore/photo-coverage-map. */
+async function listCountyPhotoCoverage(env: Env, url: URL): Promise<Response> {
+  const state = (url.searchParams.get("state") || "").trim().toUpperCase();
+  if (state && !/^[A-Z]{2}$/.test(state)) {
+    return badRequest(`Invalid state code "${state}".`);
+  }
+  const sql = state
+    ? `SELECT c.county_fips, c.county_name, c.state_code,
+              COUNT(DISTINCT pcd.plant_id) AS taxa_count,
+              COUNT(DISTINCT CASE WHEN p.photo_url IS NOT NULL THEN p.id END) AS photo_count
+         FROM counties c
+         LEFT JOIN plant_county_distribution pcd ON pcd.county_fips = c.county_fips
+         LEFT JOIN plants p ON p.id = pcd.plant_id
+        WHERE c.state_code = ?
+        GROUP BY c.county_fips
+        ORDER BY c.county_fips`
+    : `SELECT c.county_fips, c.county_name, c.state_code,
+              COUNT(DISTINCT pcd.plant_id) AS taxa_count,
+              COUNT(DISTINCT CASE WHEN p.photo_url IS NOT NULL THEN p.id END) AS photo_count
+         FROM counties c
+         LEFT JOIN plant_county_distribution pcd ON pcd.county_fips = c.county_fips
+         LEFT JOIN plants p ON p.id = pcd.plant_id
+        GROUP BY c.county_fips
+        ORDER BY c.county_fips`;
+  const rows = await (state
+    ? env.DB.prepare(sql).bind(state).all()
+    : env.DB.prepare(sql).all());
+  const counties = (rows.results ?? []).map((r: any) => ({
+    county_fips: r.county_fips,
+    county_name: r.county_name,
+    state_code:  r.state_code,
+    taxa_count:  r.taxa_count,
+    photo_count: r.photo_count,
+    photo_pct:   r.taxa_count > 0
+      ? Math.round((r.photo_count / r.taxa_count) * 1000) / 10
+      : 0,
+  }));
+  return json({ count: counties.length, counties }, 200, "long");
+}
+
+/** Per-state count of endemic taxa — plants recorded in this state ONLY.
+ *  Used by /explore/state-endemics. */
+async function listStateEndemicCounts(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `WITH plant_states AS (
+       SELECT pcd.plant_id, c.state_code
+         FROM plant_county_distribution pcd
+         JOIN counties c ON c.county_fips = pcd.county_fips
+        GROUP BY pcd.plant_id, c.state_code
+     ),
+     endemics AS (
+       SELECT plant_id, MIN(state_code) AS only_state
+         FROM plant_states
+        GROUP BY plant_id
+       HAVING COUNT(DISTINCT state_code) = 1
+     )
+     SELECT s.state_code, s.state_name, s.country,
+            COUNT(e.plant_id) AS endemic_count
+       FROM states s
+       LEFT JOIN endemics e ON e.only_state = s.state_code
+      GROUP BY s.state_code
+     HAVING COUNT(e.plant_id) > 0
+      ORDER BY endemic_count DESC, s.state_name`
+  ).all();
+  const states = rows.results ?? [];
+  return json({ count: states.length, states }, 200, "long");
+}
+
+/** Paginated list of a state's endemic taxa (plants recorded ONLY in that state). */
+async function endemicTaxaByState(env: Env, code: string, url: URL): Promise<Response> {
+  const sc = code.toUpperCase();
+  const state = await env.DB.prepare(
+    "SELECT state_code, state_name FROM states WHERE state_code = ?"
+  ).bind(sc).first();
+  if (!state) return notFound(`No state with code "${sc}".`);
+
+  const { limit, offset } = parsePaging(url, { defaultLimit: 50, maxLimit: 5000 });
+
+  // CTE: plants whose entire distribution lives inside one state.
+  const totalRow = await env.DB.prepare(
+    `WITH endemics AS (
+       SELECT pcd.plant_id
+         FROM plant_county_distribution pcd
+         JOIN counties c ON c.county_fips = pcd.county_fips
+        GROUP BY pcd.plant_id
+       HAVING COUNT(DISTINCT c.state_code) = 1
+          AND MIN(c.state_code) = ?
+     )
+     SELECT COUNT(*) AS n
+       FROM plants p
+       JOIN endemics e ON e.plant_id = p.id
+      WHERE p.is_synonym = 0 AND p.is_excluded = 0`
+  ).bind(sc).first<{ n: number }>();
+  const total = totalRow?.n ?? 0;
+
+  const rows = await env.DB.prepare(
+    `WITH endemics AS (
+       SELECT pcd.plant_id
+         FROM plant_county_distribution pcd
+         JOIN counties c ON c.county_fips = pcd.county_fips
+        GROUP BY pcd.plant_id
+       HAVING COUNT(DISTINCT c.state_code) = 1
+          AND MIN(c.state_code) = ?
+     )
+     SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
+            p.photo_thumb_url
+       FROM plants p
+       JOIN endemics e ON e.plant_id = p.id
+      WHERE p.is_synonym = 0 AND p.is_excluded = 0
+      ORDER BY p.scientific_name
+      LIMIT ? OFFSET ?`
+  ).bind(sc, limit, offset).all();
+  const plants = rows.results ?? [];
+
+  return json({
+    state,
+    total,
+    paging: { limit, offset, count: plants.length, has_more: offset + plants.length < total },
+    plants,
+  }, 200, "long");
+}
+
+/** List every family with its plant + genus count. Used by /explore/families. */
+async function listFamilies(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT family,
+            COUNT(DISTINCT id)    AS plant_count,
+            COUNT(DISTINCT genus) AS genus_count
+       FROM plants
+      WHERE family IS NOT NULL
+        AND family != ''
+        AND is_synonym = 0
+        AND is_excluded = 0
+      GROUP BY family
+      ORDER BY plant_count DESC, family`
+  ).all();
+  const families = rows.results ?? [];
+  return json({ count: families.length, families }, 200, "long");
+}
+
+/** Bulk: every county with a mapped hardiness zone. Used by the national
+ *  zone-map visualization on the website. Filter by `?state=XX` for the
+ *  per-state subset. */
+async function listHardinessCounties(env: Env, url: URL): Promise<Response> {
+  const state = (url.searchParams.get("state") || "").trim().toUpperCase();
+  if (state && !/^[A-Z]{2}$/.test(state)) {
+    return badRequest(`Invalid state code "${state}". Use the two-letter USPS code.`);
+  }
+  const rows = await (state
+    ? env.DB.prepare(
+        `SELECT c.county_fips, c.county_name, c.state_code, hzc.zone_code
+           FROM hardiness_zones_by_county hzc
+           JOIN counties c ON c.county_fips = hzc.county_fips
+          WHERE c.state_code = ?
+          ORDER BY c.county_fips`
+      ).bind(state).all()
+    : env.DB.prepare(
+        `SELECT c.county_fips, c.county_name, c.state_code, hzc.zone_code
+           FROM hardiness_zones_by_county hzc
+           JOIN counties c ON c.county_fips = hzc.county_fips
+          ORDER BY c.county_fips`
+      ).all());
+  const counties = rows.results ?? [];
+  return json({
+    count: counties.length,
+    counties,
   }, 200, "long");
 }
 

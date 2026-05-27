@@ -1,0 +1,130 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, type FamilySummary } from '@/lib/api';
+
+let families: FamilySummary[] = [];
+let error: string | null = null;
+try {
+  const r = await api.families();
+  families = r.families;
+} catch {
+  error = 'Could not load families right now.';
+}
+
+// USDA family strings include authority (e.g. "Asteraceae Bercht. & J. Presl").
+// Pretty display strips authority; the canonical filter keeps it.
+const canonical = (f: string): string => f.split(' ')[0];
+
+const totalTaxa  = families.reduce((n, f) => n + f.plant_count, 0);
+const totalGenera = families.reduce((n, f) => n + f.genus_count, 0);
+
+// Split into a "top 12" hero block and an A–Z tail for the rest.
+const top    = families.slice(0, 12);
+const rest   = families.slice(12).sort((a, b) => canonical(a.family).localeCompare(canonical(b.family)));
+---
+
+<BaseLayout
+  title="Browse by family — Explore — rootfast"
+  description="Every botanical family present in the Rootfast catalogue, sorted by taxa count."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Taxonomic exploration</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">Browse by family</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Taxonomic exploration</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        Browse by family
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Every botanical family present in the catalogue, ranked by accepted taxa.
+        Open a family to see every taxon within it.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">Families</dt>
+          <dd class="mt-1 mono">{families.length.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Distinct genera</dt>
+          <dd class="mt-1 mono">{totalGenera.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Total taxa</dt>
+          <dd class="mt-1 mono">{totalTaxa.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono">
+            <a class="link-hover" href="/docs#listFamilies">/v1/families</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    {error && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{error}</p>
+    )}
+
+    {!error && families.length > 0 && (
+      <>
+        <section class="py-7">
+          <p class="label">Twelve largest families</p>
+          <ul class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-rule border border-rule">
+            {top.map(f => (
+              <li>
+                <a href={`/explore/family/${encodeURIComponent(canonical(f.family).toLowerCase())}`}
+                   class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                  <p class="font-serif text-xl italic text-ink leading-tight">{canonical(f.family)}</p>
+                  <p class="mt-1 text-xs text-ink-3 mono truncate">{f.family}</p>
+                  <p class="mt-4 text-sm text-ink-2">
+                    <span class="mono text-ink">{f.plant_count.toLocaleString('en-US')}</span>
+                    <span class="text-ink-3"> taxa · </span>
+                    <span class="mono text-ink">{f.genus_count.toLocaleString('en-US')}</span>
+                    <span class="text-ink-3"> genera</span>
+                  </p>
+                  <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open family ↗</p>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section class="py-7 border-t border-rule">
+          <p class="label">All families, A–Z</p>
+          <ul class="mt-4 divide-y divide-rule border-t border-b border-rule">
+            {rest.map(f => (
+              <li>
+                <a href={`/explore/family/${encodeURIComponent(canonical(f.family).toLowerCase())}`}
+                   class="flex items-baseline gap-4 py-3 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+                  <span class="font-serif italic text-base text-ink leading-tight flex-1 truncate">{canonical(f.family)}</span>
+                  <span class="text-xs text-ink-3 mono truncate hidden sm:inline">{f.family}</span>
+                  <span class="mono text-sm text-ink shrink-0">{f.plant_count.toLocaleString('en-US')}</span>
+                  <span class="text-xs text-ink-3 mono shrink-0">{f.genus_count}g</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+          <p class="mt-4 text-xs text-ink-3 italic">
+            Taxa count, then genus count. Tiny families (sometimes a single
+            taxon) sit at the bottom of the list — they're often
+            phylogenetically isolated and worth a look.
+          </p>
+        </section>
+      </>
+    )}
+  </article>
+</BaseLayout>

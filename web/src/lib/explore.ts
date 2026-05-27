@@ -28,6 +28,185 @@ export interface ExploreCategory {
 
 export const EXPLORE_CATEGORIES: ExploreCategory[] = [
   {
+    key: 'hardiness',
+    label: 'Hardiness & climate',
+    intro: 'Slices keyed to the USDA Plant Hardiness Zone Map (2023). The map shows where each zone lands; the lists join the zone temperature bounds against each plant\'s minimum survivable temperature.',
+    lists: [
+      {
+        slug: 'hardiness-zone-map',
+        label: 'National hardiness zone map',
+        short: 'Every US county coloured by zone.',
+        description: 'Renders all 3,199 mapped US counties at their USDA-published hardiness zone. Hover for the county\'s zone class and °F range.',
+        filters: {},  // visualization, not a filtered listing — see /explore/hardiness-zone-map
+      },
+      {
+        slug: 'cold-hardy-plants',
+        label: 'Cold-hardy (zone 4a or colder)',
+        short: 'Plants surviving to −30 °F or below.',
+        description: 'Taxa whose minimum survivable temperature is −30 °F or lower — suitable for hardiness zone 4a and colder. The Upper Plains, northern New England, the Mountain West interior.',
+        filters: { max_temperature_f: -30 },
+      },
+      {
+        slug: 'warm-climate-plants',
+        label: 'Warm-climate (zone 8a and warmer)',
+        short: 'Plants needing winter lows no colder than 10 °F.',
+        description: 'Taxa whose minimum survivable temperature is at least 10 °F — won\'t survive a hard freeze, thrive in zone 8a and warmer. The Gulf Coast, Florida, low desert.',
+        filters: { min_temperature_f: 10 },
+      },
+      {
+        slug: 'biodiversity-map',
+        label: 'Counties by plant diversity',
+        short: 'Every county coloured by its taxa count.',
+        description: 'Every US county rendered by how many distinct plant taxa USDA records there. The southern Appalachians, the California Floristic Province, and the Gulf Coast lead by a wide margin.',
+        filters: {},
+      },
+      {
+        slug: 'photo-coverage-map',
+        label: 'Photo coverage by county',
+        short: 'Where iNaturalist photo coverage is thin.',
+        description: 'Each US county rendered by the share of its recorded taxa that have an iNaturalist photo on file. An honest look at where the visual side of the catalogue is well-covered and where it isn\'t.',
+        filters: {},
+      },
+      {
+        slug: 'where-i-live',
+        label: 'What grows where I live?',
+        short: 'Enter a ZIP. See your zone and what works.',
+        description: 'Enter a US ZIP code. Rootfast looks up your USDA hardiness zone and returns the catalogue filtered to taxa whose minimum survivable temperature is at or below your zone\'s lower bound.',
+        filters: {},
+      },
+      {
+        slug: 'soil-map',
+        label: 'National soil-texture map',
+        short: 'Every county coloured by its surface soil texture.',
+        description: 'Each US county rendered at its USDA-SSURGO surface texture class — sandy soils in the Coastal Plain, silt loams across the Corn Belt, clays along the Mississippi alluvium, and rocky mountain skeleton soils where centroids fall in steep terrain.',
+        filters: {},
+      },
+    ],
+  },
+
+  {
+    key: 'seasonal',
+    label: 'Seasonal',
+    intro: 'Time-sensitive slices that rotate with the calendar.',
+    lists: [
+      {
+        slug: 'blooming-now',
+        label: 'What\'s blooming now',
+        short: 'Native plants flowering this month.',
+        description: 'Taxa USDA records as blooming during the current month — re-computed each time the page is requested. Useful for matching a field observation against the catalogue or for planning a phenology walk.',
+        filters: {},
+      },
+    ],
+  },
+
+  {
+    key: 'wetland',
+    label: 'Wetland gradient',
+    intro: 'USDA\'s wetland indicator codes mark a plant\'s typical hydrology — from obligate wetland species you only find with their feet wet, all the way to obligate uplands that won\'t tolerate standing water. Useful for restoration, rain-garden design, and reading a site\'s hydrology.',
+    lists: [
+      {
+        slug: 'wetland-obligate',
+        label: 'Obligate wetland (OBL)',
+        short: 'Almost always in wetlands.',
+        description: 'Species USDA classifies as OBL — found in wetlands more than 99% of the time. Cattails, marsh marigold, the duckweeds. The canonical "this site is a wetland" indicators.',
+        filters: { wetland_code: 'OBL' },
+      },
+      {
+        slug: 'wetland-facultative-wet',
+        label: 'Facultative wetland (FACW)',
+        short: 'Usually in wetlands.',
+        description: 'Species USDA classifies as FACW — wetlands 67%–99% of the time, occasionally in uplands. Many sedges and willows.',
+        filters: { wetland_code: 'FACW' },
+      },
+      {
+        slug: 'wetland-facultative',
+        label: 'Facultative (FAC)',
+        short: 'Equally at home in either.',
+        description: 'Species USDA classifies as FAC — wetlands and uplands roughly evenly. The generalists.',
+        filters: { wetland_code: 'FAC' },
+      },
+      {
+        slug: 'wetland-facultative-upland',
+        label: 'Facultative upland (FACU)',
+        short: 'Usually in uplands.',
+        description: 'Species USDA classifies as FACU — uplands 67%–99% of the time, but tolerate occasional wet feet.',
+        filters: { wetland_code: 'FACU' },
+      },
+      {
+        slug: 'wetland-upland',
+        label: 'Obligate upland (UPL)',
+        short: 'Almost never in wetlands.',
+        description: 'Species USDA classifies as UPL — uplands more than 99% of the time. Desert and dryland natives, most conifers.',
+        filters: { wetland_code: 'UPL' },
+      },
+    ],
+  },
+
+  {
+    key: 'taxonomy',
+    label: 'Taxonomic exploration',
+    intro: 'Browse by botanical structure — families for taxonomic depth, growth habit for shape.',
+    lists: [
+      {
+        slug: 'families',
+        label: 'Browse by family',
+        short: 'All 300+ families ranked by taxa count.',
+        description: 'Every botanical family present in the catalogue, with the number of accepted taxa and distinct genera in each. Asteraceae (asters, sunflowers, daisies) leads with nearly 4,000 taxa; Poaceae (grasses) and Fabaceae (legumes) follow.',
+        filters: {},
+      },
+      {
+        slug: 'trees',
+        label: 'Trees',
+        short: 'Every taxon USDA classes as a tree.',
+        description: 'Taxa with a Tree growth habit — from coast redwoods to high-elevation krummholz pines.',
+        filters: { growth_habit: 'Tree' },
+      },
+      {
+        slug: 'shrubs',
+        label: 'Shrubs',
+        short: 'Shrubs and subshrubs.',
+        description: 'Woody plants smaller than trees — the structural layer of most natural plantings.',
+        filters: { growth_habit: 'Shrub' },
+      },
+      {
+        slug: 'grasses',
+        label: 'Grasses & graminoids',
+        short: 'Bunchgrasses, sedges, rushes.',
+        description: 'Graminoid-form taxa: grasses (Poaceae), sedges (Cyperaceae), rushes (Juncaceae), plus their look-alikes.',
+        filters: { growth_habit: 'Graminoid' },
+      },
+      {
+        slug: 'forbs',
+        label: 'Forbs & herbs',
+        short: 'Non-graminoid herbaceous plants.',
+        description: 'Forb-form herbaceous plants — wildflowers, broadleaved herbs, everything between grasses and shrubs.',
+        filters: { growth_habit: 'Forb/herb' },
+      },
+    ],
+  },
+
+  {
+    key: 'ecology',
+    label: 'Ecological role',
+    intro: 'Slices keyed to ecological function rather than appearance.',
+    lists: [
+      {
+        slug: 'nitrogen-fixers',
+        label: 'Nitrogen fixers',
+        short: 'Plants that fix atmospheric nitrogen.',
+        description: 'Taxa USDA rates as Medium or High for nitrogen fixation — legumes (Fabaceae), alders (Alnus), Ceanothus, and a handful of other lineages with the symbiotic-bacteria trick. Important for soil-building plantings and restoration after disturbance.',
+        filters: { nitrogen_fixation: 'Medium,High' },
+      },
+      {
+        slug: 'state-endemics',
+        label: 'State endemics',
+        short: 'Plants recorded in exactly one state.',
+        description: 'For each US state, the taxa whose entire USDA-recorded distribution lives within that single state. California, Hawaii, Texas, and Florida dominate.',
+        filters: {},
+      },
+    ],
+  },
+  {
     key: 'availability',
     label: 'Commercial availability',
     intro: 'Plants you can actually buy — what nurseries stock, what propagators contract for.',

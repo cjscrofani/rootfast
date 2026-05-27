@@ -1,0 +1,185 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, ApiError, type PlantsListResponse } from '@/lib/api';
+
+// Month → USDA `bloom_period` value(s) it overlaps with. Conservative — most
+// months touch two adjacent USDA period labels, so we OR them together.
+const MONTH_MAP: Record<number, { name: string; periods: string[] }> = {
+  0:  { name: 'January',   periods: ['Winter', 'Late Winter'] },
+  1:  { name: 'February',  periods: ['Late Winter', 'Early Spring', 'Spring'] },
+  2:  { name: 'March',     periods: ['Early Spring', 'Mid Spring', 'Spring'] },
+  3:  { name: 'April',     periods: ['Mid Spring', 'Late Spring', 'Spring'] },
+  4:  { name: 'May',       periods: ['Late Spring', 'Early Summer', 'Spring', 'Summer'] },
+  5:  { name: 'June',      periods: ['Early Summer', 'Mid Summer', 'Summer'] },
+  6:  { name: 'July',      periods: ['Mid Summer', 'Summer'] },
+  7:  { name: 'August',    periods: ['Mid Summer', 'Late Summer', 'Summer'] },
+  8:  { name: 'September', periods: ['Late Summer', 'Fall'] },
+  9:  { name: 'October',   periods: ['Fall'] },
+  10: { name: 'November',  periods: ['Fall', 'Winter'] },
+  11: { name: 'December',  periods: ['Winter', 'Late Winter'] },
+};
+
+const now    = new Date();
+const month  = MONTH_MAP[now.getUTCMonth()];
+const filter = month.periods.join(',');
+
+const PAGE_SIZE = 50;
+const urlParams = Astro.url.searchParams;
+const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
+const page   = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
+const offset = (page - 1) * PAGE_SIZE;
+
+const VALID_SORT = new Set(['sci', 'common']);
+const rawSort = urlParams.get('sort') ?? 'sci';
+const sort    = VALID_SORT.has(rawSort) ? rawSort : 'sci';
+
+let data: PlantsListResponse;
+try {
+  data = await api.plants({ bloom_period: filter, limit: PAGE_SIZE, offset, sort });
+} catch (err) {
+  if (err instanceof ApiError) {
+    return new Response(`API error: ${err.status}`, { status: 502 });
+  }
+  throw err;
+}
+
+const totalCount  = data.total;
+const totalPages  = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+const clampedPage = Math.min(page, totalPages);
+const showingFrom = totalCount === 0 ? 0 : offset + 1;
+const showingTo   = Math.min(offset + PAGE_SIZE, totalCount);
+
+function qs(overrides: Record<string, string | null>): string {
+  const next = new URLSearchParams();
+  if (sort !== 'sci') next.set('sort', sort);
+  if (clampedPage > 1) next.set('page', String(clampedPage));
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null) next.delete(k);
+    else            next.set(k, v);
+  }
+  const s = next.toString();
+  return s ? `?${s}` : '';
+}
+---
+
+<BaseLayout
+  title={`What's blooming in ${month.name} — Explore — rootfast`}
+  description="USDA-recorded taxa flowering during the current month."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Seasonal</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">What's blooming now</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Seasonal</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        What's blooming in <span class="italic">{month.name}</span>
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Taxa USDA records as flowering during the current month. The set rotates
+        as the calendar turns — bookmark this page and return next month.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">Matching taxa</dt>
+          <dd class="mt-1 mono">{totalCount.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Page</dt>
+          <dd class="mt-1 mono">{clampedPage} / {totalPages.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Bloom periods</dt>
+          <dd class="mt-1 mono text-xs text-ink-3">{month.periods.join(' · ')}</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono text-xs">
+            <a class="link-hover" href={`/docs#plants_list`}>?bloom_period</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <section class="py-7" id="plants">
+      <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-5">
+        <p class="text-sm text-ink-3 italic">
+          Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
+          of <span class="text-ink-2">{totalCount.toLocaleString('en-US')}</span>.
+        </p>
+
+        <form method="get" class="flex items-center gap-3">
+          <label for="rf-sort" class="label">Sort by</label>
+          <select id="rf-sort" name="sort" onchange="this.form.submit()"
+                  class="font-sans text-sm bg-paper border-b border-rule-strong py-1 px-0 focus:outline-none focus:border-native">
+            <option value="sci"    selected={sort === 'sci'}>Scientific name</option>
+            <option value="common" selected={sort === 'common'}>Common name</option>
+          </select>
+        </form>
+      </div>
+
+      <ul class="mt-5 divide-y divide-rule">
+        {data.plants.map(p => (
+          <li>
+            <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
+               class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+              {p.photo_thumb_url ? (
+                <img src={p.photo_thumb_url} alt="" loading="lazy"
+                     class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
+              ) : (
+                <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
+              )}
+              <div class="flex-1 min-w-0">
+                <div class="flex items-baseline justify-between gap-4">
+                  <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
+                  <span class="mono text-xs text-ink-3 shrink-0">{p.usda_symbol}</span>
+                </div>
+                <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                  {p.common_name && <span>{p.common_name}</span>}
+                  {p.common_name && p.family && <span class="text-ink-3">·</span>}
+                  {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
+                </div>
+              </div>
+            </a>
+          </li>
+        ))}
+      </ul>
+
+      {totalCount === 0 && (
+        <p class="mt-10 text-center font-serif italic text-ink-3">
+          USDA has no taxa recorded as blooming this month.
+        </p>
+      )}
+
+      {totalPages > 1 && (
+        <nav class="mt-6 flex items-center justify-between gap-4 text-sm" aria-label="List pagination">
+          {clampedPage > 1
+            ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
+            : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
+          <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
+          {clampedPage < totalPages
+            ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
+            : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
+        </nav>
+      )}
+    </section>
+  </article>
+
+  <style is:global>
+    a.pill { text-decoration: none; }
+    span.pill.rf-disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</BaseLayout>

@@ -64,14 +64,22 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
         <h2 class="mt-10 font-serif text-2xl text-ink">How it's built</h2>
         <p class="mt-3 text-ink-2 leading-relaxed">
           A Python ETL fetches from USDA's undocumented public ArcGIS endpoints and
-          REST API. A matcher calls GBIF's <code>/species/match</code> endpoint to
-          assign each plant a canonical taxonomic key. The merged dataset is written
-          to Cloudflare D1; a small TypeScript Worker serves the API. The site you're
+          REST API, one state at a time. A matcher calls GBIF's
+          <code>/species/match</code> endpoint to assign each plant a canonical
+          taxonomic key. iNaturalist photos are joined in by taxon id, with each
+          photo's individual CC license preserved on the record. The merged dataset
+          is written to Cloudflare D1 via a chunked-import script that works around
+          a brittle upload path in modern wrangler; a small TypeScript Worker serves
+          the API behind an OpenAPI 3.0 spec at
+          <a class="link-hover text-ink" href="/docs">/docs</a>. The site you're
           reading is Astro on Cloudflare Pages.
         </p>
         <p class="mt-4 text-ink-2 leading-relaxed">
           Code is MIT-licensed, data is CC0. The whole thing runs comfortably inside
-          Cloudflare's free tier.
+          Cloudflare's free tier. Source — including ETL pipelines, schema migrations,
+          and the discovery notes that explain how to find these undocumented USDA
+          endpoints in the first place — is on GitHub:
+          <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast" target="_blank" rel="noreferrer">github.com/cjscrofani/rootfast ↗</a>.
         </p>
 
       </section>
@@ -119,6 +127,20 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
             Issues, ideas, corrections, requests for specific regions — welcome.
             Rootfast is a quiet public-interest project. Bring your patch.
           </p>
+          <ul class="mt-4 space-y-2 text-sm">
+            <li>
+              <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast" target="_blank" rel="noreferrer">github.com/cjscrofani/rootfast ↗</a>
+              <span class="text-ink-3"> — full source, schema, ETL scripts</span>
+            </li>
+            <li>
+              <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/issues" target="_blank" rel="noreferrer">Open an issue ↗</a>
+              <span class="text-ink-3"> — data fixes, feature requests, bug reports</span>
+            </li>
+            <li>
+              <a class="link-hover text-ink" href="/docs">API documentation</a>
+              <span class="text-ink-3"> — runnable examples, OpenAPI spec, rate limits</span>
+            </li>
+          </ul>
         </div>
       </aside>
     </div>

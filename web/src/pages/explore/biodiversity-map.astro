@@ -1,0 +1,252 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, type CountyTaxaCountRow } from '@/lib/api';
+
+import countySvg from '../../../public/usa-counties.svg?raw';
+
+interface ApiState {
+  counties: CountyTaxaCountRow[];
+  error?: string;
+}
+
+let state: ApiState = { counties: [] };
+try {
+  const r = await api.countiesTaxaCounts();
+  state = { counties: r.counties };
+} catch {
+  state = { counties: [], error: 'Could not load biodiversity data right now.' };
+}
+
+// Color bins. Cool → warm as biodiversity climbs. Bins chosen from the live
+// distribution: median is ~600 taxa/county, top is ~3,100 (San Bernardino, CA).
+interface Bin { label: string; min: number; max: number; color: string; }
+const BINS: Bin[] = [
+  { label: 'none recorded',  min: 0,    max: 0,    color: '#EDE5D2' },
+  { label: '1–199',          min: 1,    max: 199,  color: '#D6DBC4' },
+  { label: '200–499',        min: 200,  max: 499,  color: '#B5C99B' },
+  { label: '500–899',        min: 500,  max: 899,  color: '#8EB279' },
+  { label: '900–1,399',      min: 900,  max: 1399, color: '#5D9B6A' },
+  { label: '1,400–1,999',    min: 1400, max: 1999, color: '#3F8367' },
+  { label: '2,000–2,499',    min: 2000, max: 2499, color: '#2E6859' },
+  { label: '2,500+',         min: 2500, max: Infinity, color: '#1F4D49' },
+];
+
+const binFor = (n: number): Bin =>
+  BINS.find(b => n >= b.min && n <= b.max) ?? BINS[0];
+
+const cssRules = state.counties
+  .map(c => `#c${c.county_fips}{fill:${binFor(c.taxa_count).color};}`)
+  .join('');
+
+const wallCss = `#counties path{stroke:rgba(26,24,21,0.20);stroke-width:0.25;}`;
+
+const hoverPayload = JSON.stringify(
+  state.counties.map(c => ({
+    f: c.county_fips,
+    m: c.county_name,
+    s: c.state_code,
+    t: c.taxa_count,
+  }))
+);
+
+const total = state.counties.length;
+const totalTaxa = state.counties.reduce((n, c) => Math.max(n, c.taxa_count), 0);
+const top5 = [...state.counties].sort((a, b) => b.taxa_count - a.taxa_count).slice(0, 5);
+
+const binCounts: { bin: Bin; count: number }[] = BINS.map(bin => ({
+  bin,
+  count: state.counties.filter(c => c.taxa_count >= bin.min && c.taxa_count <= bin.max).length,
+}));
+---
+
+<BaseLayout
+  title="Counties by plant diversity — rootfast"
+  description="Every US county coloured by the number of distinct plant taxa USDA records there."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Hardiness &amp; climate</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">Counties by plant diversity</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Hardiness &amp; climate</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        Counties by plant diversity
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Every US county rendered by the number of distinct plant taxa USDA records
+        as occurring there. Deeper greens are richer floras.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">Counties</dt>
+          <dd class="mt-1 mono">{total.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Richest county</dt>
+          <dd class="mt-1 mono">{totalTaxa.toLocaleString('en-US')} taxa</dd>
+        </div>
+        <div>
+          <dt class="label">Source</dt>
+          <dd class="mt-1 mono text-ink-3">USDA PLANTS</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono">
+            <a class="link-hover" href="/docs#listCountyTaxaCounts">/v1/counties/taxa-counts</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    {state.error && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{state.error}</p>
+    )}
+
+    {!state.error && (
+      <>
+        <section class="py-7">
+          <div class="rf-bdmap-card border border-rule bg-paper">
+            <div
+              class="rf-map-wrap"
+              data-rf-bdmap
+              data-counties={hoverPayload}
+              set:html={countySvg}
+            />
+
+            <div class="rf-bdmap-legend">
+              <div class="flex items-baseline justify-between gap-4 mb-3">
+                <p class="label">Legend</p>
+                <span class="text-xs text-ink-3 italic">Hover a county for detail.</span>
+              </div>
+              <div class="rf-bdmap-hover mono text-xs text-ink-2 mb-3" aria-live="polite" hidden></div>
+              <ul class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 text-sm">
+                {binCounts.map(({ bin, count }) => (
+                  <li class="flex items-center gap-3 border border-rule bg-paper px-3 py-2">
+                    <span
+                      class="inline-block w-4 h-4 border border-rule shrink-0"
+                      style={`background:${bin.color}`}
+                      aria-hidden="true"
+                    ></span>
+                    <span class="font-serif text-sm text-ink leading-none">{bin.label}</span>
+                    <span class="ml-auto text-xs text-ink-3 mono">{count.toLocaleString('en-US')}</span>
+                  </li>
+                ))}
+              </ul>
+              <p class="mt-4 text-xs text-ink-3 italic">
+                Each row is a bin of taxa count, the swatch color used on the map, and
+                the number of US counties currently falling in that bin. The pale
+                "none recorded" bin covers counties with no distribution rows yet —
+                typically newly-platted, recently-split, or small water-heavy
+                jurisdictions.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="py-7 border-t border-rule">
+          <p class="label">Top 5 counties</p>
+          <ul class="mt-4 divide-y divide-rule border-t border-b border-rule">
+            {top5.map(c => (
+              <li class="py-3.5 flex items-baseline gap-4">
+                <span class="font-serif text-lg text-ink leading-tight flex-1 truncate">{c.county_name} County, {c.state_code}</span>
+                <span class="mono text-xs text-ink-3">FIPS {c.county_fips}</span>
+                <span class="mono text-sm text-ink">{c.taxa_count.toLocaleString('en-US')}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section class="py-7 border-t border-rule">
+          <p class="label">Related</p>
+          <ul class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-px bg-rule border border-rule">
+            <li>
+              <a href="/explore/hardiness-zone-map"
+                 class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                <p class="font-serif text-lg text-ink leading-tight">National hardiness zone map</p>
+                <p class="mt-2 text-sm text-ink-2 leading-relaxed">The matching climate-zone view — every county at its USDA-published hardiness zone.</p>
+                <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open ↗</p>
+              </a>
+            </li>
+            <li>
+              <a href="/states"
+                 class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                <p class="font-serif text-lg text-ink leading-tight">All states</p>
+                <p class="mt-2 text-sm text-ink-2 leading-relaxed">Browse the catalogue state-by-state for state-level taxa counts.</p>
+                <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open ↗</p>
+              </a>
+            </li>
+          </ul>
+        </section>
+      </>
+    )}
+  </article>
+
+  <style set:html={`${wallCss}${cssRules}`} is:global />
+
+  <style is:global>
+    .rf-map-wrap svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: 80vh;
+    }
+    .rf-map-wrap svg path { fill: #faf6ee; transition: fill 80ms ease; }
+    .rf-map-wrap svg path:hover { fill-opacity: 0.7; }
+    .rf-bdmap-legend {
+      padding: 0.85rem 1rem 1rem;
+      border-top: 1px solid var(--rf-rule);
+    }
+    .rf-bdmap-hover { min-height: 1.1rem; }
+    .rf-bdmap-hover[hidden] { display: block !important; visibility: hidden; }
+  </style>
+
+  <script>
+    type HoverRow = { f: string; m: string; s: string; t: number };
+
+    for (const root of document.querySelectorAll<HTMLElement>('[data-rf-bdmap]')) {
+      let rows: HoverRow[] = [];
+      try {
+        rows = JSON.parse(root.dataset.counties || '[]');
+      } catch { rows = []; }
+      const byFips = new Map<string, HoverRow>();
+      for (const r of rows) byFips.set(r.f, r);
+
+      const svg = root.querySelector<SVGSVGElement>('svg');
+      const hoverEl = document.querySelector<HTMLDivElement>('.rf-bdmap-hover');
+      if (!svg || !hoverEl) continue;
+
+      svg.addEventListener('mouseover', (e) => {
+        const t = e.target as Element;
+        if (!(t instanceof SVGPathElement)) return;
+        const id = t.id;
+        if (!id || !id.startsWith('c')) return;
+        const fips = id.slice(1);
+        const hit = byFips.get(fips);
+        hoverEl.hidden = false;
+        if (hit) {
+          hoverEl.textContent =
+            `${hit.m} County, ${hit.s} · FIPS ${fips} · ${hit.t.toLocaleString('en-US')} taxa`;
+        } else {
+          hoverEl.textContent = `FIPS ${fips} · no record`;
+        }
+      });
+      svg.addEventListener('mouseleave', () => {
+        hoverEl.hidden = true;
+        hoverEl.textContent = '';
+      });
+    }
+  </script>
+</BaseLayout>

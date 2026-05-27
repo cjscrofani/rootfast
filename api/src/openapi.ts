@@ -91,6 +91,7 @@ export const OPENAPI_SPEC = {
           { $ref: "#/components/parameters/maxTemperatureF" },
           { $ref: "#/components/parameters/minCounties" },
           { $ref: "#/components/parameters/maxCounties" },
+          { $ref: "#/components/parameters/wetlandCodeFilter" },
         ],
         responses: {
           "200": {
@@ -221,6 +222,46 @@ export const OPENAPI_SPEC = {
       },
     },
 
+    "/v1/counties/taxa-counts": {
+      get: {
+        tags: ["counties"],
+        operationId: "listCountyTaxaCounts",
+        summary: "Every county with its taxa count.",
+        description:
+          "Bulk listing for biodiversity visualizations (the counties-by-biodiversity map on rootfast.org/explore is the canonical consumer). Returns all ~3,227 US counties in one response. Filter by `?state=XX` for a per-state subset.",
+        parameters: [
+          { name: "state", in: "query", description: "USPS state code (optional filter).", schema: { type: "string", minLength: 2, maxLength: 2 } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CountyTaxaCountsResponse" } } },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+        },
+      },
+    },
+
+    "/v1/counties/photo-coverage": {
+      get: {
+        tags: ["counties"],
+        operationId: "listCountyPhotoCoverage",
+        summary: "Per-county photo coverage.",
+        description:
+          "For each US county, returns the total recorded taxa, the count with an iNaturalist photo on file, and the resulting percentage. Used by the photo-coverage map on /explore.",
+        parameters: [
+          { name: "state", in: "query", schema: { type: "string", minLength: 2, maxLength: 2 } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CountyPhotoCoverageResponse" } } },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+        },
+      },
+    },
+
     "/v1/counties/{county_fips}/plants": {
       get: {
         tags: ["counties"],
@@ -268,6 +309,44 @@ export const OPENAPI_SPEC = {
             description: "OK",
             content: { "application/json": { schema: { $ref: "#/components/schemas/StatesListResponse" } } },
           },
+        },
+      },
+    },
+
+    "/v1/states/endemics": {
+      get: {
+        tags: ["states"],
+        operationId: "listStateEndemicCounts",
+        summary: "Per-state count of endemic taxa.",
+        description:
+          "Each state with at least one taxon recorded ONLY within its borders, ranked by endemic count. Florida, California, Texas, and Hawaii dominate the top of the list. Used by the state-endemics explore page.",
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/StateEndemicCountsResponse" } } },
+          },
+        },
+      },
+    },
+
+    "/v1/states/{state_code}/endemic-taxa": {
+      get: {
+        tags: ["states"],
+        operationId: "endemicTaxaByState",
+        summary: "Endemic taxa within a state.",
+        description:
+          "Paginated list of taxa whose entire USDA-recorded distribution lies inside the given state — true single-state endemics.",
+        parameters: [
+          { $ref: "#/components/parameters/stateCode" },
+          { $ref: "#/components/parameters/limit" },
+          { $ref: "#/components/parameters/offset" },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/StateEndemicTaxaResponse" } } },
+          },
+          "404": { $ref: "#/components/responses/NotFound" },
         },
       },
     },
@@ -335,6 +414,22 @@ export const OPENAPI_SPEC = {
       },
     },
 
+    "/v1/families": {
+      get: {
+        tags: ["plants"],
+        operationId: "listFamilies",
+        summary: "Plant families with counts.",
+        description:
+          "Every botanical family that appears in the catalogue, with the count of accepted (non-synonym, non-excluded) taxa and distinct genera. Sorted by `plant_count` descending — Asteraceae, Poaceae, Fabaceae lead. Used by the families browser at /explore/families.",
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/FamiliesResponse" } } },
+          },
+        },
+      },
+    },
+
     "/v1/search": {
       get: {
         tags: ["search"],
@@ -387,6 +482,28 @@ export const OPENAPI_SPEC = {
       },
     },
 
+    "/v1/hardiness/counties": {
+      get: {
+        tags: ["hardiness"],
+        operationId: "listHardinessCounties",
+        summary: "Every county with a mapped hardiness zone.",
+        description:
+          "Bulk listing for visualization use cases (the national zone map on rootfast.org/explore " +
+          "is the canonical consumer). ~3,199 rows nationwide. Filter by `?state=XX` for a per-state " +
+          "subset; counties without a centroid-derived zone (territories, water-heavy coastal) are absent.",
+        parameters: [
+          { name: "state", in: "query", description: "USPS state code (optional filter).", schema: { type: "string", minLength: 2, maxLength: 2 } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/HardinessCountiesResponse" } } },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+        },
+      },
+    },
+
     "/v1/hardiness/zip/{zip}": {
       get: {
         tags: ["hardiness"],
@@ -420,6 +537,45 @@ export const OPENAPI_SPEC = {
           "200": {
             description: "OK",
             content: { "application/json": { schema: { $ref: "#/components/schemas/HardinessCountyResponse" } } },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+          "404": { $ref: "#/components/responses/NotFound" },
+        },
+      },
+    },
+
+    "/v1/soil/counties": {
+      get: {
+        tags: ["counties"],
+        operationId: "listSoilByCounty",
+        summary: "Per-county SSURGO soil profile.",
+        description:
+          "Bulk listing for soil-map visualizations. One representative soil profile per US county, sampled at the centroid and aggregated from USDA-NRCS SSURGO via the Soil Data Access REST API. Filter by `?state=XX` for a per-state subset.",
+        parameters: [
+          { name: "state", in: "query", schema: { type: "string", minLength: 2, maxLength: 2 } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/SoilByCountyListResponse" } } },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+        },
+      },
+    },
+
+    "/v1/soil/county/{county_fips}": {
+      get: {
+        tags: ["counties"],
+        operationId: "soilByCounty",
+        summary: "Single county SSURGO soil profile.",
+        description:
+          "Returns the sampled soil at a county's centroid: USDA map unit, dominant component, drainage class, texture, slope, surface pH, organic matter, sand/silt/clay %, and available water capacity. Counties whose centroid falls outside any mapped soil (territories, big water bodies) return `soil: null` with a note.",
+        parameters: [{ $ref: "#/components/parameters/countyFips" }],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/SoilByCountyResponse" } } },
           },
           "400": { $ref: "#/components/responses/BadRequest" },
           "404": { $ref: "#/components/responses/NotFound" },
@@ -480,6 +636,7 @@ export const OPENAPI_SPEC = {
       growthHabitFilter: { name: "growth_habit", in: "query", schema: { type: "string", enum: ["Tree","Shrub","Subshrub","Vine","Forb/herb","Forb","Graminoid","Nonvascular","Lichenous"] } },
       durationFilter:  { name: "duration",    in: "query", schema: { type: "string", enum: ["Annual","Biennial","Perennial"] } },
       nativityFilter:  { name: "nativity",    in: "query", schema: { type: "string", enum: ["Native","Introduced","Both"] } },
+      wetlandCodeFilter: { name: "wetland_code", in: "query", description: "Wetland indicator code from USDA — OBL (obligate wetland), FACW (facultative wetland), FAC (facultative), FACU (facultative upland), UPL (obligate upland), NL (no indicator).", schema: { type: "string", enum: ["OBL","FACW","FAC","FACU","UPL","NL"] } },
       droughtTolerance:{ name: "drought_tolerance", in: "query", schema: { type: "string", enum: ["High","Medium","Low","None"] } },
       shadeTolerance:  { name: "shade_tolerance",   in: "query", schema: { type: "string", enum: ["Intolerant","Intermediate","Tolerant"] } },
       moistureUse:     { name: "moisture_use",      in: "query", schema: { type: "string", enum: ["High","Medium","Low","None"] } },
@@ -791,6 +948,166 @@ export const OPENAPI_SPEC = {
               temp_min_f:       { type: "number" },
               temp_max_f:       { type: "number" },
               description:      { type: "string" },
+            },
+          },
+        },
+      },
+      SoilProfile: {
+        type: "object",
+        properties: {
+          mukey:            { type: "integer", nullable: true, description: "USDA-NRCS map unit key." },
+          muname:           { type: "string",  nullable: true },
+          dominant_comp:    { type: "string",  nullable: true },
+          drainage_class:   { type: "string",  nullable: true },
+          texture_class:    { type: "string",  nullable: true, description: "Derived USDA soil-triangle class." },
+          slope_pct:        { type: "number",  nullable: true },
+          surface_ph:       { type: "number",  nullable: true },
+          surface_om_pct:   { type: "number",  nullable: true },
+          surface_sand_pct: { type: "number",  nullable: true },
+          surface_silt_pct: { type: "number",  nullable: true },
+          surface_clay_pct: { type: "number",  nullable: true },
+          awc_in_top_25cm:  { type: "number",  nullable: true },
+        },
+      },
+      SoilByCountyResponse: {
+        type: "object",
+        properties: {
+          county: {
+            type: "object",
+            properties: {
+              county_fips: { type: "string" },
+              county_name: { type: "string" },
+              state_code:  { type: "string" },
+            },
+          },
+          soil: { allOf: [{ $ref: "#/components/schemas/SoilProfile" }], nullable: true },
+          note: { type: "string" },
+        },
+      },
+      SoilByCountyListResponse: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          counties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                county_fips:      { type: "string" },
+                county_name:      { type: "string" },
+                state_code:       { type: "string" },
+                muname:           { type: "string", nullable: true },
+                dominant_comp:    { type: "string", nullable: true },
+                drainage_class:   { type: "string", nullable: true },
+                texture_class:    { type: "string", nullable: true },
+                surface_ph:       { type: "number", nullable: true },
+                surface_om_pct:   { type: "number", nullable: true },
+                slope_pct:        { type: "number", nullable: true },
+                surface_sand_pct: { type: "number", nullable: true },
+                surface_silt_pct: { type: "number", nullable: true },
+                surface_clay_pct: { type: "number", nullable: true },
+                awc_in_top_25cm:  { type: "number", nullable: true },
+              },
+            },
+          },
+        },
+      },
+      CountyPhotoCoverageResponse: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          counties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                county_fips: { type: "string" },
+                county_name: { type: "string" },
+                state_code:  { type: "string" },
+                taxa_count:  { type: "integer" },
+                photo_count: { type: "integer" },
+                photo_pct:   { type: "number", description: "Photos / taxa as a percentage." },
+              },
+            },
+          },
+        },
+      },
+      StateEndemicCountsResponse: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          states: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                state_code:    { type: "string" },
+                state_name:    { type: "string" },
+                country:       { type: "string" },
+                endemic_count: { type: "integer" },
+              },
+            },
+          },
+        },
+      },
+      StateEndemicTaxaResponse: {
+        type: "object",
+        properties: {
+          state:  { $ref: "#/components/schemas/State" },
+          total:  { type: "integer" },
+          paging: { $ref: "#/components/schemas/Paging" },
+          plants: { type: "array", items: { $ref: "#/components/schemas/PlantSummary" } },
+        },
+      },
+      CountyTaxaCountsResponse: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          counties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                county_fips: { type: "string" },
+                county_name: { type: "string" },
+                state_code:  { type: "string" },
+                taxa_count:  { type: "integer" },
+              },
+            },
+          },
+        },
+      },
+      FamiliesResponse: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          families: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                family:      { type: "string", example: "Asteraceae" },
+                plant_count: { type: "integer" },
+                genus_count: { type: "integer" },
+              },
+            },
+          },
+        },
+      },
+      HardinessCountiesResponse: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          counties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                county_fips: { type: "string" },
+                county_name: { type: "string" },
+                state_code:  { type: "string" },
+                zone_code:   { type: "string" },
+              },
             },
           },
         },

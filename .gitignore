@@ -61,6 +61,10 @@ sources/usda-plants/etl/processed/
 sources/usda-hardiness/etl/raw/**
 sources/usda-hardiness/etl/processed/
 
+# USDA Soil ETL — ignore raw/ wholesale (no reference seeds yet)
+sources/usda-soil/etl/raw/**
+sources/usda-soil/etl/processed/
+
 # Unified API artefacts (chunks, .db, .sql dumps)
 api/processed/
 

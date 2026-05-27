@@ -1,0 +1,111 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, type StateEndemicSummary } from '@/lib/api';
+import { stateSlugOf } from '@/lib/states';
+
+let states: StateEndemicSummary[] = [];
+let error: string | null = null;
+try {
+  const r = await api.stateEndemics();
+  states = r.states;
+} catch {
+  error = 'Could not load state-endemic data right now.';
+}
+
+const totalEndemics = states.reduce((n, s) => n + s.endemic_count, 0);
+const top    = states.slice(0, 8);
+const rest   = states.slice(8);
+---
+
+<BaseLayout
+  title="State endemics — Explore — rootfast"
+  description="For each US state, taxa recorded only within its borders."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Ecological role</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">State endemics</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Ecological role</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        State endemics
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Plants whose entire USDA-recorded distribution lives within a single
+        state's borders. The California Floristic Province, the Hawaiian
+        islands, and the long-isolated Floridian peninsula dominate.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">States with endemics</dt>
+          <dd class="mt-1 mono">{states.length}</dd>
+        </div>
+        <div>
+          <dt class="label">Total endemic taxa</dt>
+          <dd class="mt-1 mono">{totalEndemics.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono text-xs">
+            <a class="link-hover" href="/docs#listStateEndemicCounts">/v1/states/endemics</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    {error && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{error}</p>
+    )}
+
+    {!error && states.length > 0 && (
+      <>
+        <section class="py-7">
+          <p class="label">Top 8 states</p>
+          <ul class="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-px bg-rule border border-rule">
+            {top.map(s => (
+              <li>
+                <a href={`/explore/state-endemics/${stateSlugOf(s.state_code)}`}
+                   class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                  <p class="font-serif text-xl text-ink leading-tight">{s.state_name}</p>
+                  <p class="mt-1 text-xs text-ink-3 mono">{s.state_code}</p>
+                  <p class="mt-4 mono text-2xl text-ink">{s.endemic_count.toLocaleString('en-US')}</p>
+                  <p class="text-xs text-ink-3">endemic taxa</p>
+                  <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open ↗</p>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section class="py-7 border-t border-rule">
+          <p class="label">All states with endemics</p>
+          <ul class="mt-4 divide-y divide-rule border-t border-b border-rule">
+            {rest.map(s => (
+              <li>
+                <a href={`/explore/state-endemics/${stateSlugOf(s.state_code)}`}
+                   class="flex items-baseline gap-4 py-3 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+                  <span class="font-serif text-base text-ink leading-tight flex-1 truncate">{s.state_name}</span>
+                  <span class="mono text-xs text-ink-3 shrink-0">{s.state_code}</span>
+                  <span class="mono text-sm text-ink shrink-0">{s.endemic_count.toLocaleString('en-US')}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </>
+    )}
+  </article>
+</BaseLayout>

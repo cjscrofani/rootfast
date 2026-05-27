@@ -373,4 +373,192 @@ export const api = {
     getJson<StateCountiesResponse>(`/v1/states/${encodeURIComponent(code.toUpperCase())}/counties`),
   search: (q: string) =>
     getJson<SearchResponse>(`/v1/search?q=${encodeURIComponent(q)}`),
+
+  /* ---------- Hardiness ------------------------------------------- */
+  hardinessZones: () =>
+    getJson<HardinessZonesResponse>('/v1/hardiness/zones'),
+  hardinessCounties: (opts?: { state?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.state) qs.set('state', opts.state.toUpperCase());
+    const q = qs.toString();
+    return getJson<HardinessCountiesResponse>(`/v1/hardiness/counties${q ? `?${q}` : ''}`);
+  },
+
+  /* ---------- Counties bulk + families ---------------------------- */
+  countiesTaxaCounts: (opts?: { state?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.state) qs.set('state', opts.state.toUpperCase());
+    const q = qs.toString();
+    return getJson<CountyTaxaCountsResponse>(`/v1/counties/taxa-counts${q ? `?${q}` : ''}`);
+  },
+  families: () =>
+    getJson<FamiliesResponse>('/v1/families'),
+
+  countiesPhotoCoverage: (opts?: { state?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.state) qs.set('state', opts.state.toUpperCase());
+    const q = qs.toString();
+    return getJson<CountyPhotoCoverageResponse>(`/v1/counties/photo-coverage${q ? `?${q}` : ''}`);
+  },
+  stateEndemics: () =>
+    getJson<StateEndemicCountsResponse>('/v1/states/endemics'),
+  stateEndemicTaxa: (code: string, opts?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (opts?.limit  !== undefined) qs.set('limit',  String(opts.limit));
+    if (opts?.offset !== undefined) qs.set('offset', String(opts.offset));
+    const q = qs.toString();
+    return getJson<StateEndemicTaxaResponse>(
+      `/v1/states/${encodeURIComponent(code.toUpperCase())}/endemic-taxa${q ? `?${q}` : ''}`
+    );
+  },
+
+  hardinessByZip: (zip: string) =>
+    getJson<HardinessByZipResponse>(`/v1/hardiness/zip/${encodeURIComponent(zip)}`),
+
+  /* ---------- Soil (SSURGO) -------------------------------------- */
+  soilByCounty: (fips: string) =>
+    getJson<SoilByCountyResponse>(`/v1/soil/county/${encodeURIComponent(fips)}`),
+  soilCounties: (opts?: { state?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.state) qs.set('state', opts.state.toUpperCase());
+    const q = qs.toString();
+    return getJson<SoilCountiesResponse>(`/v1/soil/counties${q ? `?${q}` : ''}`);
+  },
 };
+
+export interface SoilProfile {
+  mukey: number | null;
+  muname: string | null;
+  dominant_comp: string | null;
+  drainage_class: string | null;
+  texture_class: string | null;
+  slope_pct: number | null;
+  surface_ph: number | null;
+  surface_om_pct: number | null;
+  surface_sand_pct: number | null;
+  surface_silt_pct: number | null;
+  surface_clay_pct: number | null;
+  awc_in_top_25cm: number | null;
+}
+
+export interface SoilByCountyResponse {
+  county: { county_fips: string; county_name: string; state_code: string };
+  soil: SoilProfile | null;
+  note?: string;
+}
+
+export interface SoilCountyRow {
+  county_fips: string;
+  county_name: string;
+  state_code: string;
+  muname: string | null;
+  dominant_comp: string | null;
+  drainage_class: string | null;
+  texture_class: string | null;
+  surface_ph: number | null;
+  surface_om_pct: number | null;
+  slope_pct: number | null;
+  surface_sand_pct: number | null;
+  surface_silt_pct: number | null;
+  surface_clay_pct: number | null;
+  awc_in_top_25cm: number | null;
+}
+
+export interface SoilCountiesResponse {
+  count: number;
+  counties: SoilCountyRow[];
+}
+
+export interface CountyPhotoCoverageRow {
+  county_fips: string;
+  county_name: string;
+  state_code: string;
+  taxa_count: number;
+  photo_count: number;
+  photo_pct: number;
+}
+
+export interface CountyPhotoCoverageResponse {
+  count: number;
+  counties: CountyPhotoCoverageRow[];
+}
+
+export interface StateEndemicSummary {
+  state_code: string;
+  state_name: string;
+  country: string;
+  endemic_count: number;
+}
+
+export interface StateEndemicCountsResponse {
+  count: number;
+  states: StateEndemicSummary[];
+}
+
+export interface StateEndemicTaxaResponse {
+  state: { state_code: string; state_name: string };
+  total: number;
+  paging: { limit: number; offset: number; count: number; has_more: boolean };
+  plants: PlantInListRow[];
+}
+
+export interface HardinessByZipResponse {
+  zip_code: string;
+  zone: {
+    zone_code: string;
+    zone_class_code: number;
+    temp_min_f: number;
+    temp_max_f: number;
+    description: string;
+  };
+}
+
+export interface CountyTaxaCountRow {
+  county_fips: string;
+  county_name: string;
+  state_code: string;
+  taxa_count: number;
+}
+
+export interface CountyTaxaCountsResponse {
+  count: number;
+  counties: CountyTaxaCountRow[];
+}
+
+export interface FamilySummary {
+  family: string;
+  plant_count: number;
+  genus_count: number;
+}
+
+export interface FamiliesResponse {
+  count: number;
+  families: FamilySummary[];
+}
+
+export interface HardinessZone {
+  zone_code: string;
+  zone_class_code: number;
+  temp_min_f: number;
+  temp_max_f: number;
+  description: string;
+  zip_count: number;
+  county_count: number;
+}
+
+export interface HardinessZonesResponse {
+  count: number;
+  zones: HardinessZone[];
+}
+
+export interface HardinessCountyRow {
+  county_fips: string;
+  county_name: string;
+  state_code: string;
+  zone_code: string;
+}
+
+export interface HardinessCountiesResponse {
+  count: number;
+  counties: HardinessCountyRow[];
+}

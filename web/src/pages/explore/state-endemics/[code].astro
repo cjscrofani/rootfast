@@ -1,0 +1,157 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, ApiError, type StateEndemicTaxaResponse } from '@/lib/api';
+import { stateCodeOfSlug, stateSlugOf, stateNameOf } from '@/lib/states';
+
+const { code } = Astro.params;
+if (!code) return new Response('state code required', { status: 400 });
+
+const sc = stateCodeOfSlug(code);
+if (!sc) return new Response(`Unknown state "${code}".`, { status: 404 });
+
+const canonicalSlug = stateSlugOf(sc);
+if (code !== canonicalSlug) {
+  return Astro.redirect(`/explore/state-endemics/${canonicalSlug}`, 301);
+}
+
+const PAGE_SIZE = 50;
+const urlParams = Astro.url.searchParams;
+const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
+const page    = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
+const offset  = (page - 1) * PAGE_SIZE;
+
+let data: StateEndemicTaxaResponse;
+try {
+  data = await api.stateEndemicTaxa(sc, { limit: PAGE_SIZE, offset });
+} catch (err) {
+  if (err instanceof ApiError) {
+    return new Response(`API error: ${err.status}`, { status: err.status === 404 ? 404 : 502 });
+  }
+  throw err;
+}
+
+const totalCount  = data.total;
+const totalPages  = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+const clampedPage = Math.min(page, totalPages);
+const showingFrom = totalCount === 0 ? 0 : offset + 1;
+const showingTo   = Math.min(offset + PAGE_SIZE, totalCount);
+
+function qs(overrides: Record<string, string | null>): string {
+  const next = new URLSearchParams();
+  if (clampedPage > 1) next.set('page', String(clampedPage));
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null) next.delete(k);
+    else            next.set(k, v);
+  }
+  const s = next.toString();
+  return s ? `?${s}` : '';
+}
+
+const stateName = data.state?.state_name ?? stateNameOf(sc);
+---
+
+<BaseLayout
+  title={`Endemic to ${stateName} — Explore — rootfast`}
+  description={`Plants recorded only in ${stateName}.`}
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <a href="/explore/state-endemics" class="link-hover">State endemics</a>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">{stateName}</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>State endemics</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        Endemic to {stateName}
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Taxa whose entire USDA-recorded distribution lives inside {stateName}.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">Endemic taxa</dt>
+          <dd class="mt-1 mono">{totalCount.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Page</dt>
+          <dd class="mt-1 mono">{clampedPage} / {totalPages.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono text-xs">
+            <a class="link-hover" href="/docs#endemicTaxaByState">/v1/states/{sc}/endemic-taxa</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    <section class="py-7" id="plants">
+      <p class="text-sm text-ink-3 italic mb-4">
+        Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
+        of <span class="text-ink-2">{totalCount.toLocaleString('en-US')}</span>.
+      </p>
+
+      <ul class="divide-y divide-rule">
+        {data.plants.map(p => (
+          <li>
+            <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
+               class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+              {p.photo_thumb_url ? (
+                <img src={p.photo_thumb_url} alt="" loading="lazy"
+                     class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
+              ) : (
+                <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
+              )}
+              <div class="flex-1 min-w-0">
+                <div class="flex items-baseline justify-between gap-4">
+                  <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
+                  <span class="mono text-xs text-ink-3 shrink-0">{p.usda_symbol}</span>
+                </div>
+                <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                  {p.common_name && <span>{p.common_name}</span>}
+                  {p.common_name && p.family && <span class="text-ink-3">·</span>}
+                  {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
+                </div>
+              </div>
+            </a>
+          </li>
+        ))}
+      </ul>
+
+      {totalCount === 0 && (
+        <p class="mt-10 text-center font-serif italic text-ink-3">
+          No endemic taxa recorded for {stateName}.
+        </p>
+      )}
+
+      {totalPages > 1 && (
+        <nav class="mt-6 flex items-center justify-between gap-4 text-sm" aria-label="List pagination">
+          {clampedPage > 1
+            ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
+            : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
+          <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
+          {clampedPage < totalPages
+            ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
+            : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
+        </nav>
+      )}
+    </section>
+  </article>
+
+  <style is:global>
+    a.pill { text-decoration: none; }
+    span.pill.rf-disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</BaseLayout>

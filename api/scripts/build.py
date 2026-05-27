@@ -37,7 +37,7 @@ OUT_DATA_SQL = PROCESSED / "rootfast_data.sql"  # INSERTs only (for use after mi
 SOURCES: list[tuple[str, Path]] = [
     ("usda_plants",    REPO_ROOT / "sources" / "usda-plants"    / "etl" / "processed" / "usda_plants.db"),
     ("usda_hardiness", REPO_ROOT / "sources" / "usda-hardiness" / "etl" / "processed" / "hardiness.db"),
-    # ("inaturalist",  REPO_ROOT / "sources" / "inaturalist"    / "etl" / "processed" / "inaturalist.db"),
+    ("usda_soil",      REPO_ROOT / "sources" / "usda-soil"      / "etl" / "processed" / "soil.db"),
 ]
 
 # Tables in FK dependency order (parents before children).
@@ -61,6 +61,7 @@ TABLE_ORDER = [
     "hardiness_zones",
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
+    "soil_by_county",
 ]
 
 
@@ -226,6 +227,12 @@ def validate(db: sqlite3.Connection) -> None:
         zip_ = db.execute('SELECT COUNT(*) FROM hardiness_zones_by_zip').fetchone()[0]
         cty = db.execute('SELECT COUNT(*) FROM hardiness_zones_by_county').fetchone()[0]
         print(f"hardiness zones: {z}; ZIPs: {zip_}; counties: {cty}")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        soil = db.execute('SELECT COUNT(*) FROM soil_by_county').fetchone()[0]
+        with_ph = db.execute('SELECT COUNT(*) FROM soil_by_county WHERE surface_ph IS NOT NULL').fetchone()[0]
+        print(f"soil_by_county: {soil} ({with_ph} with pH)")
     except sqlite3.OperationalError:
         pass
 

@@ -1,0 +1,205 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, ApiError, type PlantsListResponse, type HardinessByZipResponse } from '@/lib/api';
+
+const urlParams = Astro.url.searchParams;
+const rawZip = (urlParams.get('zip') || '').replace(/[^0-9]/g, '').slice(0, 5);
+const zipOk  = rawZip.length === 5;
+
+let zoneResult: HardinessByZipResponse | null = null;
+let plants:     PlantsListResponse           | null = null;
+let plantsError: string | null = null;
+let zipError:    string | null = null;
+
+const PAGE_SIZE = 30;
+const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
+const page   = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
+const offset = (page - 1) * PAGE_SIZE;
+
+if (zipOk) {
+  try {
+    zoneResult = await api.hardinessByZip(rawZip);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      zipError = `No hardiness data for ZIP ${rawZip}. Double-check the code; USDA covers 40,502 US ZIPs.`;
+    } else {
+      zipError = 'Could not reach the hardiness lookup right now.';
+    }
+  }
+
+  if (zoneResult) {
+    try {
+      // Filter plants whose temperature_min_f is at or below the zone's lower
+      // bound — those that will survive your zone's typical low.
+      plants = await api.plants({
+        max_temperature_f: zoneResult.zone.temp_min_f,
+        limit:  PAGE_SIZE,
+        offset,
+        sort:   'sci',
+      });
+    } catch {
+      plantsError = 'Could not load the suitable-plants list right now.';
+    }
+  }
+}
+
+const totalCount  = plants?.total ?? 0;
+const totalPages  = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+const clampedPage = Math.min(page, totalPages);
+const showingFrom = totalCount === 0 ? 0 : offset + 1;
+const showingTo   = Math.min(offset + PAGE_SIZE, totalCount);
+
+function qs(overrides: Record<string, string>): string {
+  const next = new URLSearchParams();
+  if (rawZip) next.set('zip', rawZip);
+  if (clampedPage > 1) next.set('page', String(clampedPage));
+  for (const [k, v] of Object.entries(overrides)) next.set(k, v);
+  const s = next.toString();
+  return s ? `?${s}` : '';
+}
+---
+
+<BaseLayout
+  title="What grows where I live? — Explore — rootfast"
+  description="Enter your US ZIP. Rootfast looks up your USDA hardiness zone and filters the catalogue."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Hardiness &amp; climate</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">What grows where I live?</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Hardiness &amp; climate</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        What grows where I live?
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Enter your US ZIP. We look up your USDA hardiness zone, then return the
+        catalogue filtered to taxa whose minimum survivable temperature is at or
+        below your zone's lower bound — plants that should survive your winters.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <form method="get" class="mt-6 flex flex-wrap items-end gap-4">
+        <div class="flex flex-col gap-1">
+          <label for="rf-zip" class="label">Your ZIP</label>
+          <input
+            id="rf-zip" name="zip" type="text" inputmode="numeric"
+            pattern="[0-9]{5}" maxlength="5" autocomplete="postal-code"
+            placeholder="e.g. 59715"
+            value={rawZip}
+            class="bg-paper border-b border-rule-strong py-1 px-1 w-32 mono text-lg focus:outline-none focus:border-native"
+          />
+        </div>
+        <button type="submit" class="btn btn-native">Look up</button>
+      </form>
+    </header>
+
+    <hr class="rule-strong" />
+
+    {!zipOk && rawZip && (
+      <p class="py-10 text-center font-serif italic text-ink-3">Enter a 5-digit ZIP code above.</p>
+    )}
+
+    {zipError && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{zipError}</p>
+    )}
+
+    {zoneResult && (
+      <section class="py-7">
+        <div class="border border-rule bg-paper p-5">
+          <p class="label">Your zone</p>
+          <p class="mt-3 font-serif text-3xl text-ink">
+            <span class="italic">{zoneResult.zone.zone_code}</span>
+            <span class="text-ink-2 ml-3 text-lg mono">{zoneResult.zone.temp_min_f} to {zoneResult.zone.temp_max_f} °F</span>
+          </p>
+          <p class="mt-3 text-sm text-ink-2">
+            ZIP <span class="mono">{zoneResult.zip_code}</span> · {zoneResult.zone.description}
+          </p>
+        </div>
+      </section>
+    )}
+
+    {plantsError && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{plantsError}</p>
+    )}
+
+    {plants && plants.plants.length > 0 && (
+      <section class="py-7" id="plants">
+        <div class="flex items-baseline justify-between gap-4 mb-4">
+          <p class="label">Plants suitable for your zone</p>
+          <span class="text-xs text-ink-3 italic">temperature_min_f ≤ {zoneResult!.zone.temp_min_f} °F</span>
+        </div>
+
+        <p class="text-sm text-ink-3 italic mb-4">
+          Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
+          of <span class="text-ink-2">{totalCount.toLocaleString('en-US')}</span>.
+        </p>
+
+        <ul class="divide-y divide-rule">
+          {plants.plants.map(p => (
+            <li>
+              <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
+                 class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+                {p.photo_thumb_url ? (
+                  <img src={p.photo_thumb_url} alt="" loading="lazy"
+                       class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
+                ) : (
+                  <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
+                )}
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-baseline justify-between gap-4">
+                    <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
+                    <span class="mono text-xs text-ink-3 shrink-0">{p.usda_symbol}</span>
+                  </div>
+                  <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                    {p.common_name && <span>{p.common_name}</span>}
+                    {p.common_name && p.family && <span class="text-ink-3">·</span>}
+                    {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
+                  </div>
+                </div>
+              </a>
+            </li>
+          ))}
+        </ul>
+
+        {totalPages > 1 && (
+          <nav class="mt-6 flex items-center justify-between gap-4 text-sm" aria-label="List pagination">
+            {clampedPage > 1
+              ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
+              : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
+            <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
+            {clampedPage < totalPages
+              ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
+              : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
+          </nav>
+        )}
+
+        <p class="mt-6 text-xs text-ink-3 italic">
+          The filter only checks cold tolerance — many of these plants will also
+          need the right moisture, soil, and light for your site. Open a record
+          for its full USDA characteristics.
+        </p>
+      </section>
+    )}
+
+    {!rawZip && (
+      <p class="py-12 text-center font-serif italic text-ink-3 text-lg">
+        Enter a US ZIP above to see your zone and what works.
+      </p>
+    )}
+  </article>
+
+  <style is:global>
+    a.pill { text-decoration: none; }
+    span.pill.rf-disabled { opacity: 0.4; cursor: not-allowed; }
+  </style>
+</BaseLayout>

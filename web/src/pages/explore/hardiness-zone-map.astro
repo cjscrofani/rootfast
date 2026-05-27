@@ -1,0 +1,289 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import { api, type HardinessZone, type HardinessCountyRow } from '@/lib/api';
+
+// SVG of US counties (CC0, from US Census via Wikimedia Commons). Imported as
+// a raw string so we can color paths server-side and ship inline HTML.
+import countySvg from '../../../public/usa-counties.svg?raw';
+
+interface ApiState {
+  zones:    HardinessZone[];
+  counties: HardinessCountyRow[];
+  error?:   string;
+}
+
+let state: ApiState = { zones: [], counties: [] };
+try {
+  const [z, c] = await Promise.all([
+    api.hardinessZones(),
+    api.hardinessCounties(),
+  ]);
+  state = { zones: z.zones, counties: c.counties };
+} catch {
+  state = { zones: [], counties: [], error: 'Could not load hardiness data right now.' };
+}
+
+// Color ramp: cool → warm across the half-zones. Tied to zone_class_code
+// (1 = 1a … 26 = 13b). We only emit colors for the zones that actually have
+// counties mapped; the rest get a neutral background only in the legend.
+const RAMP: string[] = [
+  // 1a..3b — far north / Alaska (steel blues / violets)
+  '#2D3D6B','#3A4D7A','#4660A6','#5476B8','#5C8AC4','#73A1CD',
+  // 4a..5b — Mountain West / Upper Plains (teal to green)
+  '#5BA39E','#6BB1A1','#7CBE9D','#9ACC8C','#B7D785','#D2DE7F',
+  // 6a..7b — Midwest / Mid-Atlantic (chartreuse → yellow)
+  '#E2DF7A','#EFD96D','#F4C75B','#F0AE48',
+  // 8a..9b — South / Lower Coastal (oranges)
+  '#EC9438','#E47E2B','#D86821','#CC5217',
+  // 10a..11b — Subtropical (deep oranges → reds)
+  '#BF4014','#B2300F','#A02508','#911D03',
+  // 12a..13b — Tropical (deep magentas)
+  '#7D1E2E','#681A30',
+];
+
+const colorFor = (zoneCode: string): string | null => {
+  const z = state.zones.find(x => x.zone_code === zoneCode);
+  if (!z) return null;
+  return RAMP[(z.zone_class_code ?? 1) - 1] ?? null;
+};
+
+// Build a per-county-FIPS CSS rule so the inlined SVG paths get coloured.
+// The SVG uses `id="cXXXXX"` on each county path. Use the ID selector form
+// (#cXXXXX) — specificity (1,0,0) — so these rules beat the default
+// `.rf-map-wrap svg path { fill: ... }` (specificity 0,1,1). ~3,199 rules
+// total, ~80 KB of inlined CSS.
+const cssRules = state.counties
+  .map(c => {
+    const color = colorFor(c.zone_code);
+    return color ? `#c${c.county_fips}{fill:${color};}` : '';
+  })
+  .filter(Boolean)
+  .join('');
+
+// Compact payload for the client-side hover handler: fips → name, state, zone,
+// temp bounds. Keeping field names short keeps the inlined JSON small.
+const zoneByCode = new Map(state.zones.map(z => [z.zone_code, z]));
+const hoverPayload = JSON.stringify(
+  state.counties.map(c => {
+    const z = zoneByCode.get(c.zone_code);
+    return {
+      f:  c.county_fips,
+      m:  c.county_name,
+      s:  c.state_code,
+      z:  c.zone_code,
+      tn: z?.temp_min_f ?? null,
+      tx: z?.temp_max_f ?? null,
+    };
+  })
+);
+
+// Every county is a <path id="cXXXXX"> grouped under its state <g>. State
+// outlines emerge implicitly from the county strokes — no separate state
+// paths exist in this SVG. Stroke uses ID-level specificity too so it lands
+// alongside the fill rules above the global path default.
+const wallCss = `#counties path{stroke:rgba(26,24,21,0.20);stroke-width:0.25;}`;
+
+const coveredCount = state.counties.length;
+const zonesPresent = Array.from(new Set(state.counties.map(c => c.zone_code)))
+  .map(code => state.zones.find(z => z.zone_code === code))
+  .filter((z): z is HardinessZone => Boolean(z))
+  .sort((a, b) => a.zone_class_code - b.zone_class_code);
+---
+
+<BaseLayout
+  title="National hardiness zone map — rootfast"
+  description="Every US county coloured by its USDA 2023 plant hardiness zone."
+>
+  <article class="max-w-content mx-auto px-6 lg:px-10">
+    <p class="pt-6 text-xs text-ink-3">
+      <a href="/explore" class="link-hover">Explore</a>
+      <span class="mx-2">/</span>
+      <span class="text-ink-2">Hardiness &amp; climate</span>
+      <span class="mx-2">/</span>
+      <span class="font-serif italic text-ink-2">National hardiness zone map</span>
+    </p>
+
+    <header class="pt-10 pb-8">
+      <p class="label flex items-baseline gap-3">
+        <span aria-hidden="true">⚘</span>
+        <span>Hardiness &amp; climate</span>
+      </p>
+      <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
+        National hardiness zone map
+      </h1>
+      <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
+        Every US county rendered at its USDA-published 2023 hardiness zone. The cooler
+        end of the ramp is the colder end of the country.
+      </p>
+
+      <hr class="rule mt-7" />
+
+      <dl class="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+        <div>
+          <dt class="label">Counties mapped</dt>
+          <dd class="mt-1 mono">{coveredCount.toLocaleString('en-US')}</dd>
+        </div>
+        <div>
+          <dt class="label">Distinct zones present</dt>
+          <dd class="mt-1 mono">{zonesPresent.length}</dd>
+        </div>
+        <div>
+          <dt class="label">Source</dt>
+          <dd class="mt-1 mono text-ink-3">USDA-ARS PHZM 2023</dd>
+        </div>
+        <div>
+          <dt class="label">API</dt>
+          <dd class="mt-1 mono">
+            <a class="link-hover" href="/docs#hardiness_zones">/v1/hardiness/*</a>
+          </dd>
+        </div>
+      </dl>
+    </header>
+
+    <hr class="rule-strong" />
+
+    {state.error && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{state.error}</p>
+    )}
+
+    {!state.error && (
+      <>
+        <section class="py-7">
+          <div class="rf-hzmap-card border border-rule bg-paper">
+            <div
+              class="rf-map-wrap"
+              data-rf-hzmap
+              data-counties={hoverPayload}
+              set:html={countySvg}
+            />
+
+            <div class="rf-hzmap-legend">
+              <div class="flex items-baseline justify-between gap-4 mb-3">
+                <p class="label">Legend</p>
+                <span class="text-xs text-ink-3 italic">Hover a county for detail.</span>
+              </div>
+              <div class="rf-hzmap-hover mono text-xs text-ink-2 mb-3" aria-live="polite" hidden></div>
+              <ul class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 text-sm">
+            {zonesPresent.map(z => (
+              <li class="flex items-center gap-3 border border-rule bg-paper px-3 py-2">
+                <span
+                  class="inline-block w-4 h-4 border border-rule shrink-0"
+                  style={`background:${colorFor(z.zone_code) ?? '#ccc'}`}
+                  aria-hidden="true"
+                ></span>
+                <span class="font-serif text-base text-ink leading-none">{z.zone_code}</span>
+                <span class="text-xs text-ink-3 mono leading-none">{z.temp_min_f} to {z.temp_max_f} °F</span>
+                <span class="ml-auto text-xs text-ink-3 mono">{z.county_count.toLocaleString('en-US')}</span>
+              </li>
+            ))}
+              </ul>
+              <p class="mt-4 text-xs text-ink-3 italic">
+                Each row shows the zone code, the temperature range USDA assigns to it,
+                and the number of US counties whose centroid currently falls in that zone.
+                The 28 counties without a zone in our data (American Samoa, Northern
+                Mariana Islands, and a handful of water-heavy coastal counties whose
+                centroid lands outside any polygon) are intentionally rendered in the
+                base paper color.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="py-7 border-t border-rule">
+          <p class="label">Related</p>
+          <ul class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-px bg-rule border border-rule">
+            <li>
+              <a href="/explore/cold-hardy-plants"
+                 class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                <p class="font-serif text-lg text-ink leading-tight">Cold-hardy plants</p>
+                <p class="mt-2 text-sm text-ink-2 leading-relaxed">Taxa surviving to −30 °F or below — what you can plant in zone 4a and colder.</p>
+                <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open list ↗</p>
+              </a>
+            </li>
+            <li>
+              <a href="/explore/warm-climate-plants"
+                 class="block bg-paper px-5 py-5 hover:bg-surface transition-colors no-underline group h-full">
+                <p class="font-serif text-lg text-ink leading-tight">Warm-climate plants</p>
+                <p class="mt-2 text-sm text-ink-2 leading-relaxed">Taxa needing winter lows no colder than 10 °F — the zone 8a-and-warmer set.</p>
+                <p class="mt-4 text-xs label group-hover:text-native transition-colors">Open list ↗</p>
+              </a>
+            </li>
+          </ul>
+        </section>
+      </>
+    )}
+  </article>
+
+  <style set:html={`${wallCss}${cssRules}`} is:global />
+
+  <style is:global>
+    .rf-map-wrap svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: 80vh;
+    }
+    /* default un-mapped county fill — matches the page background */
+    .rf-map-wrap svg path { fill: #faf6ee; transition: fill 80ms ease; }
+    .rf-map-wrap svg path:hover { fill-opacity: 0.7; }
+    /* The legend sits flush against the bottom of the map inside the card. The
+       hairline top-border marks the boundary without re-introducing a gap. */
+    .rf-hzmap-legend {
+      padding: 0.85rem 1rem 1rem;
+      border-top: 1px solid var(--rf-rule);
+    }
+    /* Reserve a stable height so the legend doesn't jump when the hover line appears */
+    .rf-hzmap-hover { min-height: 1.1rem; }
+    .rf-hzmap-hover[hidden] { display: block !important; visibility: hidden; }
+  </style>
+
+  <script>
+    type HoverRow = {
+      f: string;       // FIPS
+      m: string;       // county name
+      s: string;       // state code
+      z: string;       // zone code
+      tn: number | null;
+      tx: number | null;
+    };
+
+    for (const root of document.querySelectorAll<HTMLElement>('[data-rf-hzmap]')) {
+      let rows: HoverRow[] = [];
+      try {
+        rows = JSON.parse(root.dataset.counties || '[]');
+      } catch { rows = []; }
+      const byFips = new Map<string, HoverRow>();
+      for (const r of rows) byFips.set(r.f, r);
+
+      const svg = root.querySelector<SVGSVGElement>('svg');
+      // Hover detail lives outside the SVG container; sibling lookup keeps the
+      // map and the legend independent layouts.
+      const hoverEl = document.querySelector<HTMLDivElement>('.rf-hzmap-hover');
+      if (!svg || !hoverEl) continue;
+
+      // One delegated listener on the SVG — cheaper than 3,146 per-path handlers.
+      svg.addEventListener('mouseover', (e) => {
+        const t = e.target as Element;
+        if (!(t instanceof SVGPathElement)) return;
+        const id = t.id;
+        if (!id || !id.startsWith('c')) return;
+        const fips = id.slice(1);
+        const hit = byFips.get(fips);
+        hoverEl.hidden = false;
+        if (hit) {
+          const range = hit.tn !== null && hit.tx !== null
+            ? ` (${hit.tn} to ${hit.tx} °F)`
+            : '';
+          hoverEl.textContent =
+            `${hit.m} County, ${hit.s} · FIPS ${fips} · Zone ${hit.z}${range}`;
+        } else {
+          hoverEl.textContent = `FIPS ${fips} · no zone data`;
+        }
+      });
+      svg.addEventListener('mouseleave', () => {
+        hoverEl.hidden = true;
+        hoverEl.textContent = '';
+      });
+    }
+  </script>
+</BaseLayout>
