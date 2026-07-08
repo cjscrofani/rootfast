@@ -156,6 +156,28 @@ The fetch scripts are idempotent — re-running picks up only what's missing.
 Raw caches live under `sources/*/etl/raw/` and are gitignored; small reference
 files (states.json, state_polygons.json) are checked in.
 
+### Cut a versioned dataset release
+
+Heavy consumers should download a snapshot rather than paginate the API. Each
+release ships the full SQLite database (gzipped) and a per-table Parquet set,
+plus a `manifest.json` with row counts and sha256 checksums.
+
+**Automated (recommended):** push a `data-v*` tag. The
+[`Dataset release`](.github/workflows/release.yml) workflow exports production
+D1, rebuilds `rootfast.db`, packages the artifacts, and publishes a GitHub
+Release. It needs a `CLOUDFLARE_API_TOKEN` repo secret with D1 read.
+
+```bash
+git tag data-v2026.07 && git push origin data-v2026.07
+```
+
+**Manual / local** (you already have a built `rootfast.db`):
+
+```bash
+python api/scripts/export_release.py api/processed/rootfast.db api/processed/release --tag data-v2026.07
+gh release create data-v2026.07 api/processed/release/* --title "Dataset data-v2026.07"
+```
+
 ## Data sources, in detail
 
 Discovery paths and gotchas for each upstream are documented in
