@@ -117,6 +117,17 @@ npm run dev
 The site reads from `PUBLIC_API_BASE_URL` (defaults to `https://api.rootfast.org`).
 Point it at your local Worker if you're iterating on both.
 
+### Run the tests
+
+```bash
+cd api && npm test          # Vitest — filter parser, paging, formatters, ETag
+python3 -m pytest tests/    # ETL transforms — soil aggregation, name reducers
+```
+
+CI (`.github/workflows/ci.yml`) runs the Worker typecheck + Vitest, the web
+`astro check`, and the ETL pytest + a syntax-compile of every script on each
+push and pull request.
+
 ### Rebuild the dataset from upstream
 
 ```bash

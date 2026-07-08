@@ -180,7 +180,7 @@ const CACHE = {
 } as const;
 type CacheProfile = keyof typeof CACHE;
 
-function cacheControl(profile: CacheProfile): string {
+export function cacheControl(profile: CacheProfile): string {
   const c = CACHE[profile];
   if (c.browser === 0 && c.edge === 0) return "no-store";
   return `public, max-age=${c.browser}, s-maxage=${c.edge}`;
@@ -204,7 +204,7 @@ function errorResponse(code: string, message: string, status: number): Response 
 /* --------------------------- ETag wrapper --------------------------- */
 
 /** Compute a short SHA-1-based weak ETag from a response body. */
-async function computeEtag(body: string): Promise<string> {
+export async function computeEtag(body: string): Promise<string> {
   const data = new TextEncoder().encode(body);
   const hash = await crypto.subtle.digest("SHA-1", data);
   const hex  = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -312,7 +312,7 @@ function badRequest(message: string): Response {
 }
 
 /** Parse `?limit=N&offset=N` with sensible defaults + clamps. */
-function parsePaging(url: URL, opts: { defaultLimit: number; maxLimit: number }): {
+export function parsePaging(url: URL, opts: { defaultLimit: number; maxLimit: number }): {
   limit: number; offset: number;
 } {
   const lp = url.searchParams.get("limit");
@@ -397,7 +397,7 @@ function pushBool(ctx: Ctx, col: string, raw: string): boolean {
 
 /** Build SQL filters from `?...` query params. `ctx.needsChars` set when a
  *  filter touches `plant_characteristics` — caller adds the LEFT JOIN. */
-function buildFilters(searchParams: URLSearchParams): Ctx | { error: string } {
+export function buildFilters(searchParams: URLSearchParams): Ctx | { error: string } {
   const ctx: Ctx = { where: [], binds: [], needsChars: false };
 
   const eat = (param: string, ok: boolean): string | null => {
@@ -571,7 +571,7 @@ function filtersEcho(url: URL): Record<string, string> | null {
 type ResponseFormat = "json" | "csv" | "ndjson" | "geojson";
 const VALID_FORMATS: readonly ResponseFormat[] = ["json", "csv", "ndjson", "geojson"];
 
-function parseFormat(url: URL, allowed: readonly ResponseFormat[] = ["json","csv","ndjson"]): ResponseFormat | { error: string } {
+export function parseFormat(url: URL, allowed: readonly ResponseFormat[] = ["json","csv","ndjson"]): ResponseFormat | { error: string } {
   const raw = url.searchParams.get("format");
   if (!raw) return "json";
   const lower = raw.toLowerCase() as ResponseFormat;
@@ -585,7 +585,7 @@ function parseFormat(url: URL, allowed: readonly ResponseFormat[] = ["json","csv
 }
 
 /** Quote a CSV value per RFC 4180. */
-function csvCell(v: unknown): string {
+export function csvCell(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "boolean") return v ? "1" : "0";
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : "";
@@ -597,7 +597,7 @@ function csvCell(v: unknown): string {
   return s;
 }
 
-function toCsv(rows: Record<string, unknown>[], columns?: string[]): string {
+export function toCsv(rows: Record<string, unknown>[], columns?: string[]): string {
   if (rows.length === 0) return columns ? columns.join(",") + "\n" : "";
   const cols = columns ?? Object.keys(rows[0]!);
   const head = cols.join(",");
@@ -605,7 +605,7 @@ function toCsv(rows: Record<string, unknown>[], columns?: string[]): string {
   return head + "\n" + body + "\n";
 }
 
-function toNdjson(rows: unknown[]): string {
+export function toNdjson(rows: unknown[]): string {
   return rows.map(r => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : "");
 }
 
@@ -923,7 +923,7 @@ function arrayOfStrings(v: unknown, name: string): { value: string[] } | { error
   return { value: out };
 }
 
-function clampInt(v: unknown, fallback: number, min: number, max: number): number {
+export function clampInt(v: unknown, fallback: number, min: number, max: number): number {
   const n = typeof v === "number" ? v : Number.parseInt(String(v ?? ""), 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
@@ -1438,7 +1438,7 @@ async function countiesByState(env: Env, code: string): Promise<Response> {
   }, 200, "medium");
 }
 
-function aggregateNativity(native: number, introduced: number, both: number): "Native" | "Introduced" | "Both" {
+export function aggregateNativity(native: number, introduced: number, both: number): "Native" | "Introduced" | "Both" {
   if (both > 0) return "Both";
   if (native > 0 && introduced > 0) return "Both";
   if (introduced > 0) return "Introduced";
