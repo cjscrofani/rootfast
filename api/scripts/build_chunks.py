@@ -1,4 +1,4 @@
-"""Emit the full data dump as many SMALL SQL chunks (~25 MB each).
+"""Emit the full data dump as many SMALL SQL chunks (~4 MB each).
 
 Each chunk fits comfortably under D1's single-roundtrip ingest path —
 no R2-upload-and-poll dance, no Node-25 fetch failures. Push them with
@@ -47,6 +47,7 @@ TABLE_ORDER = [
     "hardiness_zones",
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
+    "soil_by_county",
 ]
 
 # Tables small enough to bundle into one seed chunk.
@@ -106,7 +107,7 @@ def main() -> None:
     write_chunk(OUT_DIR, idx, "seed_small", "\n".join(seed_lines) + "\n")
     idx += 1
 
-    # Remaining tables: batch each into ~25MB chunks.
+    # Remaining tables: batch each into ~4MB chunks.
     for tbl in TABLE_ORDER:
         if tbl in SMALL:
             continue

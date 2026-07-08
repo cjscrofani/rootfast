@@ -41,6 +41,7 @@ TABLE_ORDER = [
     "hardiness_zones",
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
+    "soil_by_county",
 ]
 
 _DATA_EXCLUDE = {
