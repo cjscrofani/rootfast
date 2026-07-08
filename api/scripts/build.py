@@ -209,7 +209,10 @@ def write_data_only_sql(db: sqlite3.Connection) -> None:
             f.write(f"-- {tbl}: {len(rows)} rows\n")
             for row in rows:
                 values = ",".join(_sql_literal(v) for v in row)
-                f.write(f"INSERT INTO {tbl} ({col_list}) VALUES ({values});\n")
+                # INSERT OR IGNORE (not bare INSERT) so a re-apply that was
+                # interrupted after the DELETE block doesn't PK-conflict —
+                # matches the idempotency claim above and the chunk emitters.
+                f.write(f"INSERT OR IGNORE INTO {tbl} ({col_list}) VALUES ({values});\n")
 
     size_mb = OUT_DATA_SQL.stat().st_size / (1024 * 1024)
     print(f"  SQL dump (data-only): {OUT_DATA_SQL} ({size_mb:.1f} MB)")
