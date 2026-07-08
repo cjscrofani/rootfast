@@ -74,7 +74,13 @@ const desc = plant.common_name
   : `${plant.scientific_name_canonical} — distribution, cultivation, and identity in the rootfast catalogue.`;
 ---
 
-<BaseLayout title={pageTitle} description={desc}>
+<BaseLayout
+  title={pageTitle}
+  description={desc}
+  ogType="article"
+  ogImage={photo?.url ?? undefined}
+  ogImageAlt={photo?.url ? `Photo of ${plant.common_name ?? plant.scientific_name_canonical}` : undefined}
+>
   <article class="max-w-content mx-auto px-6 lg:px-10">
     <!-- Breadcrumb -->
     <p class="pt-6 text-xs text-ink-3">
