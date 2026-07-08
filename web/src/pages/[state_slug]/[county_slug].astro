@@ -4,6 +4,7 @@ import { api, ApiError, type CountyPlantsResponse, type StateCountiesResponse } 
 import {
   stateCodeOfSlug, stateNameOf, stateSlugOf, slugifyCounty,
 } from '@/lib/states';
+import { serviceUnavailable, notFoundPage } from '@/lib/errors';
 
 Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
 
@@ -29,9 +30,9 @@ try {
   countiesData = await api.stateCounties(code);
 } catch (err) {
   if (err instanceof ApiError && err.status === 404) {
-    return new Response(`Unknown state "${code}"`, { status: 404 });
+    return notFoundPage(`Unknown state “${code}”.`);
   }
-  throw err;
+  return serviceUnavailable('This county page');
 }
 
 const slugCounts = new Map<string, number>();
@@ -82,9 +83,9 @@ try {
   totalUnfilteredCount = (headerCount as any).total ?? headerCount.count ?? 0;
 } catch (err) {
   if (err instanceof ApiError && err.status === 404) {
-    return new Response(`No plants for county "${match.county_fips}"`, { status: 404 });
+    return notFoundPage(`No plants for county “${match.county_fips}”.`);
   }
-  throw err;
+  return serviceUnavailable('This county page');
 }
 
 const { county, plants } = data;

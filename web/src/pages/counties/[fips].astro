@@ -1,6 +1,7 @@
 ---
 // Legacy /counties/{fips} URL — redirect to /{state_slug}/{county_slug}.
 import { api, ApiError } from '@/lib/api';
+import { serviceUnavailable, notFoundPage } from '@/lib/errors';
 import { stateSlugOf, slugifyCounty } from '@/lib/states';
 
 const { fips } = Astro.params;
@@ -18,8 +19,8 @@ try {
   );
 } catch (err) {
   if (err instanceof ApiError && err.status === 404) {
-    return new Response(`No county with FIPS "${fips}"`, { status: 404 });
+    return notFoundPage(`No county with FIPS “${fips}”.`);
   }
-  throw err;
+  return serviceUnavailable('This county');
 }
 ---

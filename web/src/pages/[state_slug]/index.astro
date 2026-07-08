@@ -7,6 +7,7 @@ import {
 import {
   stateNameOf, regionOf, stateCodeOfSlug, stateSlugOf, slugifyCounty,
 } from '@/lib/states';
+import { serviceUnavailable, notFoundPage } from '@/lib/errors';
 
 Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
 
@@ -64,9 +65,9 @@ try {
   totalUnfilteredTaxa = header.state.taxa_count;
 } catch (err) {
   if (err instanceof ApiError && err.status === 404) {
-    return new Response(`No state with code "${code}"`, { status: 404 });
+    return notFoundPage(`No state with code “${code}”.`);
   }
-  throw err;
+  return serviceUnavailable('This state page');
 }
 
 const state = plantsData.state;
