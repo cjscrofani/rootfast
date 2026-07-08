@@ -69,9 +69,9 @@ export const EXPLORE_CATEGORIES: ExploreCategory[] = [
       },
       {
         slug: 'where-i-live',
-        label: 'What grows where I live?',
-        short: 'Enter a ZIP. See your zone and what works.',
-        description: 'Enter a US ZIP code. Rootfast looks up your USDA hardiness zone and returns the catalogue filtered to taxa whose minimum survivable temperature is at or below your zone\'s lower bound.',
+        label: 'What should I plant here?',
+        short: 'Pick your county. See local natives suited to your zone.',
+        description: 'Pick your state and county. Rootfast returns the plants recorded as native to your county that also tolerate its USDA hardiness zone — the intersection of what belongs there and what survives the winters.',
         filters: {},
       },
       {

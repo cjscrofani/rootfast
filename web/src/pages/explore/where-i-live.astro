@@ -1,60 +1,105 @@
 ---
 import BaseLayout from '@/layouts/BaseLayout.astro';
-import { api, ApiError, type PlantsListResponse, type HardinessByZipResponse } from '@/lib/api';
+import {
+  api, ApiError,
+  type StatesListResponse, type StateCountiesResponse,
+  type CountyPlantsResponse, type HardinessByCountyResponse,
+} from '@/lib/api';
+import { serviceUnavailable } from '@/lib/errors';
+import { stateSlugOf, slugifyCounty } from '@/lib/states';
 
-// Results depend on `?zip=` (+ pagination) — fully URL-keyed, cache at edge.
+// Results are fully keyed by ?state / ?county / ?page — cache at the edge.
 Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
 
-const urlParams = Astro.url.searchParams;
-const rawZip = (urlParams.get('zip') || '').replace(/[^0-9]/g, '').slice(0, 5);
-const zipOk  = rawZip.length === 5;
-
-let zoneResult: HardinessByZipResponse | null = null;
-let plants:     PlantsListResponse           | null = null;
-let plantsError: string | null = null;
-let zipError:    string | null = null;
+const urlParams   = Astro.url.searchParams;
+const stateParam  = (urlParams.get('state')  || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+const countyParam = (urlParams.get('county') || '').replace(/[^0-9]/g, '').slice(0, 5);
 
 const PAGE_SIZE = 30;
 const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
-const page   = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
-const offset = (page - 1) * PAGE_SIZE;
+const page    = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1;
+const offset  = (page - 1) * PAGE_SIZE;
 
-if (zipOk) {
+// Always load the state list for the picker (states with distribution data).
+let statesList: StatesListResponse;
+try {
+  statesList = await api.states();
+} catch {
+  return serviceUnavailable('This page');
+}
+
+const selectedState = statesList.states.find(s => s.state_code === stateParam) ?? null;
+
+// If a state is chosen, load its counties for the second picker.
+let countiesResp: StateCountiesResponse | null = null;
+if (selectedState) {
   try {
-    zoneResult = await api.hardinessByZip(rawZip);
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) {
-      zipError = `No hardiness data for ZIP ${rawZip}. Double-check the code; USDA covers 40,502 US ZIPs.`;
-    } else {
-      zipError = 'Could not reach the hardiness lookup right now.';
-    }
-  }
-
-  if (zoneResult) {
-    try {
-      // Filter plants whose temperature_min_f is at or below the zone's lower
-      // bound — those that will survive your zone's typical low.
-      plants = await api.plants({
-        max_temperature_f: zoneResult.zone.temp_min_f,
-        limit:  PAGE_SIZE,
-        offset,
-        sort:   'sci',
-      });
-    } catch {
-      plantsError = 'Could not load the suitable-plants list right now.';
-    }
+    countiesResp = await api.stateCounties(selectedState.state_code);
+  } catch {
+    return serviceUnavailable('This page');
   }
 }
 
-const totalCount  = plants?.total ?? 0;
-const totalPages  = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+// Reproduce the county page's per-state slug + collision suffixing so we can
+// deep-link to the canonical /{state}/{county} URL without a redirect.
+const countySlugByFips = new Map<string, string>();
+if (countiesResp) {
+  const counts = new Map<string, number>();
+  for (const c of countiesResp.counties) {
+    let slug = slugifyCounty(c.county_name);
+    const n = (counts.get(slug) ?? 0) + 1;
+    counts.set(slug, n);
+    if (n > 1) slug = `${slug}-${n}`;
+    countySlugByFips.set(c.county_fips, slug);
+  }
+}
+
+const selectedCounty = countiesResp?.counties.find(c => c.county_fips === countyParam) ?? null;
+
+// If a county is chosen, load its hardiness zone, the total native count, and
+// the page of native + cold-hardy taxa.
+let zoneResp:    HardinessByCountyResponse | null = null;
+let nativeTotal = 0;                 // all native taxa recorded in the county
+let hardy:       CountyPlantsResponse | null = null;  // native AND cold-hardy (this page)
+let dataError:   string | null = null;
+
+if (selectedCounty) {
+  try {
+    const [z, totalResp] = await Promise.all([
+      api.hardinessByCounty(selectedCounty.county_fips),
+      api.county(selectedCounty.county_fips, { nativity: 'Native', limit: 1 }),
+    ]);
+    zoneResp = z;
+    nativeTotal = totalResp.total;
+    // temp_min_f drives the cold filter; if the county has no mapped zone we
+    // fall back to all natives (undefined skips the filter).
+    hardy = await api.county(selectedCounty.county_fips, {
+      nativity: 'Native',
+      max_temperature_f: z.zone?.temp_min_f,
+      limit: PAGE_SIZE,
+      offset,
+      sort: 'sci',
+    });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) dataError = 'That county could not be found.';
+    else return serviceUnavailable('This page');
+  }
+}
+
+const hardyTotal  = hardy?.total ?? 0;
+const totalPages  = Math.max(1, Math.ceil(hardyTotal / PAGE_SIZE));
 const clampedPage = Math.min(page, totalPages);
-const showingFrom = totalCount === 0 ? 0 : offset + 1;
-const showingTo   = Math.min(offset + PAGE_SIZE, totalCount);
+const showingFrom = hardyTotal === 0 ? 0 : offset + 1;
+const showingTo   = Math.min(offset + PAGE_SIZE, hardyTotal);
+
+const countyHref = selectedCounty && selectedState
+  ? `/${stateSlugOf(selectedState.state_code)}/${countySlugByFips.get(selectedCounty.county_fips)}`
+  : '';
 
 function qs(overrides: Record<string, string>): string {
   const next = new URLSearchParams();
-  if (rawZip) next.set('zip', rawZip);
+  if (stateParam)  next.set('state',  stateParam);
+  if (countyParam) next.set('county', countyParam);
   if (clampedPage > 1) next.set('page', String(clampedPage));
   for (const [k, v] of Object.entries(overrides)) next.set(k, v);
   const s = next.toString();
@@ -63,140 +108,193 @@ function qs(overrides: Record<string, string>): string {
 ---
 
 <BaseLayout
-  title="What grows where I live? — Explore — rootfast"
-  description="Enter your US ZIP. Rootfast looks up your USDA hardiness zone and filters the catalogue."
+  title="What should I plant here? — Explore — rootfast"
+  description="Pick your state and county. Rootfast returns plants native to your area that also tolerate your USDA hardiness zone."
 >
   <article class="max-w-content mx-auto px-6 lg:px-10">
     <p class="pt-6 text-xs text-ink-3">
       <a href="/explore" class="link-hover">Explore</a>
       <span class="mx-2">/</span>
-      <span class="text-ink-2">Hardiness &amp; climate</span>
-      <span class="mx-2">/</span>
-      <span class="font-serif italic text-ink-2">What grows where I live?</span>
+      <span class="font-serif italic text-ink-2">What should I plant here?</span>
     </p>
 
     <header class="pt-10 pb-8">
       <p class="label flex items-baseline gap-3">
         <span aria-hidden="true">⚘</span>
-        <span>Hardiness &amp; climate</span>
+        <span>Plant here</span>
       </p>
       <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-none text-ink">
-        What grows where I live?
+        What should I plant here?
       </h1>
       <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
-        Enter your US ZIP. We look up your USDA hardiness zone, then return the
-        catalogue filtered to taxa whose minimum survivable temperature is at or
-        below your zone's lower bound — plants that should survive your winters.
+        Pick your state and county. We return the plants recorded as
+        <strong>native to your county</strong> that also tolerate your county's
+        USDA hardiness zone — the intersection of <em>belongs here</em> and
+        <em>survives here</em>.
       </p>
 
       <hr class="rule mt-7" />
 
+      <!-- Step 1 — state -->
       <form method="get" class="mt-6 flex flex-wrap items-end gap-4">
         <div class="flex flex-col gap-1">
-          <label for="rf-zip" class="label">Your ZIP</label>
-          <input
-            id="rf-zip" name="zip" type="text" inputmode="numeric"
-            pattern="[0-9]{5}" maxlength="5" autocomplete="postal-code"
-            placeholder="e.g. 59715"
-            value={rawZip}
-            class="bg-paper border-b border-rule-strong py-1 px-1 w-32 mono text-lg focus:outline-none focus:border-native"
-          />
+          <label for="rf-state" class="label">Your state</label>
+          <select
+            id="rf-state" name="state"
+            class="bg-paper border-b border-rule-strong py-1 px-1 text-lg focus:outline-none focus:border-native"
+          >
+            <option value="">Choose a state…</option>
+            {statesList.states.map(s => (
+              <option value={s.state_code} selected={s.state_code === stateParam}>{s.state_name}</option>
+            ))}
+          </select>
         </div>
-        <button type="submit" class="btn btn-native">Look up</button>
+        <button type="submit" class="btn btn-native">Continue</button>
       </form>
+
+      <!-- Step 2 — county (only once a state is chosen) -->
+      {selectedState && countiesResp && (
+        <form method="get" class="mt-5 flex flex-wrap items-end gap-4">
+          <input type="hidden" name="state" value={selectedState.state_code} />
+          <div class="flex flex-col gap-1">
+            <label for="rf-county" class="label">Your county</label>
+            <select
+              id="rf-county" name="county"
+              class="bg-paper border-b border-rule-strong py-1 px-1 text-lg focus:outline-none focus:border-native"
+            >
+              <option value="">Choose a county…</option>
+              {countiesResp.counties.map(c => (
+                <option value={c.county_fips} selected={c.county_fips === countyParam}>{c.county_name}</option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" class="btn btn-native">Show plants</button>
+        </form>
+      )}
     </header>
 
     <hr class="rule-strong" />
 
-    {!zipOk && rawZip && (
-      <p class="py-10 text-center font-serif italic text-ink-3">Enter a 5-digit ZIP code above.</p>
+    {dataError && (
+      <p class="py-10 mono text-sm text-ink-3 italic">{dataError}</p>
     )}
 
-    {zipError && (
-      <p class="py-10 mono text-sm text-ink-3 italic">{zipError}</p>
-    )}
-
-    {zoneResult && (
+    {selectedCounty && zoneResp && (
       <section class="py-7">
         <div class="border border-rule bg-paper p-5">
-          <p class="label">Your zone</p>
-          <p class="mt-3 font-serif text-3xl text-ink">
-            <span class="italic">{zoneResult.zone.zone_code}</span>
-            <span class="text-ink-2 ml-3 text-lg mono">{zoneResult.zone.temp_min_f} to {zoneResult.zone.temp_max_f} °F</span>
-          </p>
-          <p class="mt-3 text-sm text-ink-2">
-            ZIP <span class="mono">{zoneResult.zip_code}</span> · {zoneResult.zone.description}
-          </p>
+          <p class="label">{selectedCounty.county_name} County, {selectedState!.state_code}</p>
+          {zoneResp.zone ? (
+            <>
+              <p class="mt-3 font-serif text-3xl text-ink">
+                <span class="italic">Zone {zoneResp.zone.zone_code}</span>
+                <span class="text-ink-2 ml-3 text-lg mono">{zoneResp.zone.temp_min_f} to {zoneResp.zone.temp_max_f} °F</span>
+              </p>
+              <p class="mt-3 text-sm text-ink-2">{zoneResp.zone.description}</p>
+            </>
+          ) : (
+            <p class="mt-3 text-sm text-ink-2 italic">
+              No mapped hardiness zone for this county — showing all natives without a cold filter.
+            </p>
+          )}
+          <div class="mt-4 flex flex-wrap gap-x-5 gap-y-1 text-xs">
+            <a class="link-hover" href={countyHref}>Browse all plants in this county →</a>
+            <a class="link-hover" href="/explore/hardiness-zone-map">See the hardiness-zone map →</a>
+          </div>
         </div>
       </section>
     )}
 
-    {plantsError && (
-      <p class="py-10 mono text-sm text-ink-3 italic">{plantsError}</p>
-    )}
-
-    {plants && plants.plants.length > 0 && (
-      <section class="py-7" id="plants">
-        <div class="flex items-baseline justify-between gap-4 mb-4">
-          <p class="label">Plants suitable for your zone</p>
-          <span class="text-xs text-ink-3 italic">temperature_min_f ≤ {zoneResult!.zone.temp_min_f} °F</span>
+    {selectedCounty && hardy && (
+      <section class="py-3" id="plants">
+        <div class="flex items-baseline justify-between gap-4 mb-2">
+          <p class="label">Native &amp; suited to your zone</p>
+          {zoneResp?.zone && (
+            <span class="text-xs text-ink-3 italic">temperature_min_f ≤ {zoneResp.zone.temp_min_f} °F</span>
+          )}
         </div>
 
-        <p class="text-sm text-ink-3 italic mb-4">
-          Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
-          of <span class="text-ink-2">{totalCount.toLocaleString('en-US')}</span>.
+        <p class="text-sm text-ink-3 italic mb-5">
+          {zoneResp?.zone ? (
+            <>
+              {nativeTotal.toLocaleString('en-US')} native taxa are recorded here;
+              <span class="text-ink-2"> {hardyTotal.toLocaleString('en-US')}</span> of them carry a USDA
+              cold-tolerance rating at or below your zone's low. (Natives without a
+              rated minimum temperature aren't shown — <a class="link-hover" href={countyHref}>see the full native list</a>.)
+            </>
+          ) : (
+            <>{hardyTotal.toLocaleString('en-US')} native taxa recorded here.</>
+          )}
         </p>
 
-        <ul class="divide-y divide-rule">
-          {plants.plants.map(p => (
-            <li>
-              <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
-                 class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
-                {p.photo_thumb_url ? (
-                  <img src={p.photo_thumb_url} alt="" loading="lazy"
-                       class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
-                ) : (
-                  <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
-                )}
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-baseline justify-between gap-4">
-                    <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
-                    <span class="mono text-xs text-ink-3 shrink-0">{p.usda_symbol}</span>
-                  </div>
-                  <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
-                    {p.common_name && <span>{p.common_name}</span>}
-                    {p.common_name && p.family && <span class="text-ink-3">·</span>}
-                    {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
-                  </div>
-                </div>
-              </a>
-            </li>
-          ))}
-        </ul>
+        {hardy.plants.length > 0 ? (
+          <>
+            <p class="text-sm text-ink-3 italic mb-4">
+              Showing <span class="text-ink-2">{showingFrom.toLocaleString('en-US')}–{showingTo.toLocaleString('en-US')}</span>
+              of <span class="text-ink-2">{hardyTotal.toLocaleString('en-US')}</span>.
+            </p>
 
-        {totalPages > 1 && (
-          <nav class="mt-6 flex items-center justify-between gap-4 text-sm" aria-label="List pagination">
-            {clampedPage > 1
-              ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
-              : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
-            <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
-            {clampedPage < totalPages
-              ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
-              : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
-          </nav>
+            <ul class="divide-y divide-rule">
+              {hardy.plants.map(p => (
+                <li>
+                  <a href={`/plants/${encodeURIComponent(p.usda_symbol)}`}
+                     class="flex items-start gap-4 py-3.5 group hover:bg-surface -mx-3 px-3 transition-colors no-underline">
+                    {p.photo_thumb_url ? (
+                      <img src={p.photo_thumb_url} alt="" loading="lazy"
+                           class="shrink-0 w-12 h-12 object-cover border border-rule bg-surface" />
+                    ) : (
+                      <span class="shrink-0 w-12 h-12 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>
+                    )}
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-baseline justify-between gap-4">
+                        <span class="font-serif italic text-lg text-ink leading-tight truncate">{p.scientific_name}</span>
+                        <span class="mono text-xs text-ink-3 shrink-0">{p.usda_symbol}</span>
+                      </div>
+                      <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
+                        {p.common_name && <span>{p.common_name}</span>}
+                        {p.common_name && p.family && <span class="text-ink-3">·</span>}
+                        {p.family && <span class="font-serif italic text-ink-3">{p.family.split(' ')[0]}</span>}
+                      </div>
+                    </div>
+                  </a>
+                </li>
+              ))}
+            </ul>
+
+            {totalPages > 1 && (
+              <nav class="mt-6 flex items-center justify-between gap-4 text-sm" aria-label="List pagination">
+                {clampedPage > 1
+                  ? <a class="pill" href={`${qs({ page: String(clampedPage - 1) })}#plants`}>← Prev</a>
+                  : <span class="pill rf-disabled" aria-disabled="true">← Prev</span>}
+                <span class="text-ink-3">Page {clampedPage} of {totalPages.toLocaleString('en-US')}</span>
+                {clampedPage < totalPages
+                  ? <a class="pill" href={`${qs({ page: String(clampedPage + 1) })}#plants`}>Next →</a>
+                  : <span class="pill rf-disabled" aria-disabled="true">Next →</span>}
+              </nav>
+            )}
+          </>
+        ) : (
+          <p class="py-8 font-serif italic text-ink-3">
+            No native taxa here carry a cold-tolerance rating at or below your zone.
+            {countyHref && <> Try <a class="link-hover" href={countyHref}>the full native list for this county</a>.</>}
+          </p>
         )}
 
         <p class="mt-6 text-xs text-ink-3 italic">
-          The filter only checks cold tolerance — many of these plants will also
-          need the right moisture, soil, and light for your site. Open a record
-          for its full USDA characteristics.
+          Cold tolerance is one factor. Many of these will also need the right
+          moisture, soil, and light for your specific site — open a record for its
+          full USDA characteristics.
         </p>
       </section>
     )}
 
-    {!rawZip && (
+    {!selectedState && (
       <p class="py-12 text-center font-serif italic text-ink-3 text-lg">
-        Enter a US ZIP above to see your zone and what works.
+        Choose your state above to begin.
+      </p>
+    )}
+    {selectedState && !selectedCounty && (
+      <p class="py-12 text-center font-serif italic text-ink-3 text-lg">
+        Now choose your county.
       </p>
     )}
   </article>

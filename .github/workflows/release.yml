@@ -1,0 +1,89 @@
+name: Dataset release
+
+# Publish a versioned dataset snapshot to GitHub Releases. Production D1 is the
+# source of truth: we export it, rebuild rootfast.db, and package SQLite +
+# Parquet + a checksummed manifest.
+#
+# Trigger by pushing a tag like `data-v2026.07`, or run manually via the Actions
+# tab (workflow_dispatch) with a tag input.
+#
+# Requires one repository secret:
+#   CLOUDFLARE_API_TOKEN   a token with D1 read on the rootfast database
+# Optionally set the CLOUDFLARE_ACCOUNT_ID repo variable if the token maps to
+# more than one account.
+
+on:
+  push:
+    tags: ['data-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. data-v2026.07)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci
+        working-directory: api
+
+      - name: Export production D1 to SQL
+        working-directory: api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 export rootfast --remote --output ../rootfast.sql
+
+      - name: Rebuild rootfast.db
+        run: sqlite3 rootfast.db < rootfast.sql
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pandas pyarrow
+
+      - name: Package release artifacts
+        run: python api/scripts/export_release.py rootfast.db release-out --tag "${{ steps.tag.outputs.tag }}"
+
+      - name: Build release notes
+        run: |
+          python - "${{ steps.tag.outputs.tag }}" > release-notes.md <<'PY'
+          import json, sys
+          m = json.load(open("release-out/manifest.json"))
+          tag = sys.argv[1]
+          print(f"# rootfast dataset {tag}\n")
+          print(f"Schema version **{m['schema_version']}** · **{m['total_rows']:,}** rows across {len(m['table_row_counts'])} tables.\n")
+          print("Public-domain (CC0 1.0). Two equivalent downloads:\n")
+          print("- `rootfast.sqlite.gz` — the full SQLite database, gzipped.")
+          print("- `rootfast-parquet.zip` — one Parquet file per table (DuckDB / pandas / Spark).\n")
+          print("`manifest.json` carries per-table row counts and a sha256 for each artifact.\n")
+          print("## Checksums\n")
+          for a in m["artifacts"]:
+              print(f"- `{a['name']}` — {a['bytes']:,} bytes — `sha256:{a['sha256']}`")
+          PY
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            release-out/rootfast.sqlite.gz \
+            release-out/rootfast-parquet.zip \
+            release-out/manifest.json \
+            --title "Dataset ${{ steps.tag.outputs.tag }}" \
+            --notes-file release-notes.md
