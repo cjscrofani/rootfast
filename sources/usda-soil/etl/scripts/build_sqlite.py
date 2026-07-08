@@ -108,8 +108,13 @@ def aggregate(rows: list[dict]) -> dict | None:
         comppct = _f(horizons[0].get("comppct_r")) or 0
         if comppct <= 0:
             continue
-        # Surface horizons: anything starting above 25 cm depth.
-        surface = [h for h in horizons if (_f(h.get("hzdept_r")) or 999) < 25]
+        # Surface horizons: anything starting above 25 cm depth. Note the
+        # explicit None check — the true surface horizon has hzdept_r == 0,
+        # which is falsy, so `_f(...) or 999` would wrongly exclude it.
+        surface = [
+            h for h in horizons
+            if (top := _f(h.get("hzdept_r"))) is not None and top < 25
+        ]
         if not surface:
             continue
         # Take the first surface horizon (the topmost) for each component.

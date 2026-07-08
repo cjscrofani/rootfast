@@ -11,6 +11,10 @@ export interface Props {
   ogType?: 'website' | 'article';
   /** Mark a page as non-indexable (search results, etc.). */
   noindex?: boolean;
+  /** Absolute URL of a preview image for social shares (e.g. a plant photo). */
+  ogImage?: string;
+  /** Alt text describing ogImage. */
+  ogImageAlt?: string;
 }
 
 const {
@@ -19,6 +23,8 @@ const {
   noFooter = false,
   ogType = 'website',
   noindex = false,
+  ogImage,
+  ogImageAlt,
 } = Astro.props;
 
 // Astro.site is set in astro.config.mjs; fall back to the production origin so
@@ -44,11 +50,14 @@ const canonical = new URL(Astro.url.pathname, siteOrigin).toString();
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
+    {ogImage && <meta property="og:image" content={ogImage} />}
+    {ogImage && ogImageAlt && <meta property="og:image:alt" content={ogImageAlt} />}
 
     <!-- Twitter -->
-    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:card" content={ogImage ? 'summary_large_image' : 'summary'} />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
+    {ogImage && <meta name="twitter:image" content={ogImage} />}
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

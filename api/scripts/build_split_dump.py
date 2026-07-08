@@ -41,6 +41,7 @@ TABLE_ORDER = [
     "hardiness_zones",
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
+    "soil_by_county",
 ]
 
 _DATA_EXCLUDE = {
@@ -65,7 +66,7 @@ def main() -> None:
     db = sqlite3.connect(SRC_DB)
 
     # ---- Part A: DELETEs (all) + INSERTs (all except BULKY) -------------
-    with OUT_A.open("w") as f:
+    with OUT_A.open("w", encoding="utf-8") as f:
         f.write("-- Part A — DELETE all data tables; INSERT every table EXCEPT plant_county_distribution.\n")
         for tbl in reversed(TABLE_ORDER):
             if tbl in _DATA_EXCLUDE:
@@ -89,7 +90,7 @@ def main() -> None:
     cols = [c[1] for c in db.execute(f"PRAGMA table_info({BULKY})").fetchall()]
     col_list = ",".join(cols)
     rows = db.execute(f"SELECT {col_list} FROM {BULKY}").fetchall()
-    with OUT_B.open("w") as f:
+    with OUT_B.open("w", encoding="utf-8") as f:
         f.write(f"-- Part B — {BULKY} only.\n")
         f.write(f"-- {BULKY}: {len(rows)} rows\n")
         for row in rows:

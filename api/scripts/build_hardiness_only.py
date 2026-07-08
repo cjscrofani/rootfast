@@ -36,7 +36,7 @@ def _lit(v: object) -> str:
 def main() -> None:
     db = sqlite3.connect(SRC)
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUT.open("w") as f:
+    with OUT.open("w", encoding="utf-8") as f:
         f.write("-- hardiness-only data load.\n")
         # Wipe in reverse-FK order: children before parents.
         for tbl in reversed(TABLES):

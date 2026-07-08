@@ -34,7 +34,7 @@ beyond attribution.
 | Counties with hardiness zone | **3,199 / 3,227** |
 | GBIF match coverage | **100 %** |
 | iNaturalist photos | **26,125** (94 %) |
-| Schema version | **003** |
+| Schema version | **005** |
 
 ## Repo layout
 
@@ -47,7 +47,9 @@ rootfast/
 │   ├── schema/               SQLite-dialect D1 migrations
 │   │   ├── 001_initial.sql   Core schema (plants, counties, distribution, …)
 │   │   ├── 002_photos.sql    iNaturalist photo columns
-│   │   └── 003_hardiness.sql Hardiness zones (zones / by_zip / by_county)
+│   │   ├── 003_hardiness.sql Hardiness zones (zones / by_zip / by_county)
+│   │   ├── 004_wetland_index.sql  Wetland-indicator index
+│   │   └── 005_soil.sql      SSURGO soil profile per county
 │   ├── scripts/              Build + push tooling
 │   │   ├── build.py          Merge source SQLite chunks → unified rootfast.db
 │   │   ├── build_chunks.py   Split data dump into 4 MB chunks (D1 push)

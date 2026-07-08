@@ -278,6 +278,9 @@ export interface PlantInCountyRow {
 export interface CountyPlantsResponse {
   county: CountyHeader;
   count: number;
+  /** Total taxa in the county under the current filter (for pagination). */
+  total: number;
+  paging?: { limit: number; offset: number; has_more: boolean };
   plants: PlantInCountyRow[];
 }
 
@@ -302,15 +305,36 @@ export interface HealthResponse {
 
 /* ---------- Fetch helpers ------------------------------------------- */
 
+/** Per-request timeout for SSR fetches — a hung origin must not stall the
+ *  whole page render up to the platform limit. */
+const REQUEST_TIMEOUT_MS = 8000;
+/** Transient upstream states worth one retry (rate-limit / gateway blips). */
+const RETRY_STATUSES = new Set([429, 502, 503, 504]);
+
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
-  });
-  if (!res.ok) {
-    throw new ApiError(res.status, `GET ${path} → ${res.status}`);
+  const url = `${API_BASE}${path}`;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    try {
+      const res = await fetch(url, {
+        ...init,
+        signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
+      });
+      if (res.ok) return (await res.json()) as T;
+      const err = new ApiError(res.status, `GET ${path} → ${res.status}`);
+      // Retry a transient status once; surface everything else immediately.
+      if (attempt === 0 && RETRY_STATUSES.has(res.status)) lastErr = err;
+      else throw err;
+    } catch (err) {
+      // A non-retryable ApiError propagates without a second attempt.
+      if (err instanceof ApiError && !RETRY_STATUSES.has(err.status)) throw err;
+      lastErr = err;
+      if (attempt === 1) throw err; // network/timeout error on the last try
+    }
+    await new Promise((r) => setTimeout(r, 150)); // brief backoff before retry
   }
-  return (await res.json()) as T;
+  throw lastErr instanceof Error ? lastErr : new ApiError(502, `GET ${path} failed`);
 }
 
 export class ApiError extends Error {

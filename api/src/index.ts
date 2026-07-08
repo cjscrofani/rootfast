@@ -218,6 +218,10 @@ async function applyEtag(req: Request, res: Response): Promise<Response> {
   const cc = res.headers.get("cache-control") || "";
   if (cc.includes("no-store") || cc === "")  return res;    // skip uncacheable
   if (res.headers.get("etag")) return res;                  // already set by handler
+  // Skip bulk downloads (CSV/NDJSON/GeoJSON exports). They carry a
+  // Content-Disposition attachment header and can be many MB; buffering the
+  // whole body to SHA-1 it would defeat streaming and burn CPU per request.
+  if (res.headers.get("content-disposition")?.includes("attachment")) return res;
 
   const text = await res.clone().text();
   if (!text) return res;

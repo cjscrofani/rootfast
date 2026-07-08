@@ -81,6 +81,22 @@ import { API_BASE } from '@/lib/api';
       }
     }
 
+    // Escape a value destined for an HTML attribute value ("..."). Covers the
+    // quote and angle brackets so an API-supplied URL/symbol can't break out
+    // of the attribute and inject markup.
+    function escAttr(s: string): string {
+      return s
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    // Escape a value destined for text between tags.
+    function escText(s: string): string {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     function highlight(text: string, q: string): string {
       if (!q) return text;
       const i = text.toLowerCase().indexOf(q.toLowerCase());
@@ -101,14 +117,14 @@ import { API_BASE } from '@/lib/api';
       }
       status.textContent = `${hits.length} match${hits.length === 1 ? '' : 'es'}.`;
       list.innerHTML = hits.map((h, i) => {
-        const cleaned = h.scientific_name.replace(/&/g,'&amp;').replace(/</g,'&lt;');
-        const common = (h.common_name || '').replace(/</g,'&lt;');
-        const family = (h.family || '').replace(/</g,'&lt;');
+        const cleaned = escText(h.scientific_name);
+        const common = escText(h.common_name || '');
+        const family = escText(h.family || '');
         const thumb = h.photo_thumb_url
-          ? `<img src="${h.photo_thumb_url}" alt="" loading="lazy" class="shrink-0 w-11 h-11 object-cover border border-rule bg-surface">`
+          ? `<img src="${escAttr(h.photo_thumb_url)}" alt="" loading="lazy" class="shrink-0 w-11 h-11 object-cover border border-rule bg-surface">`
           : `<span class="shrink-0 w-11 h-11 border border-rule bg-surface flex items-center justify-center text-ink-3" aria-hidden="true">⚘</span>`;
         return `
-          <li role="option" data-symbol="${h.usda_symbol}" data-idx="${i}">
+          <li role="option" data-symbol="${escAttr(h.usda_symbol)}" data-idx="${i}">
             <a href="/plants/${encodeURIComponent(h.usda_symbol)}"
                class="flex items-start gap-3 py-3 group hover:bg-surface px-3 -mx-3 transition-colors">
               ${thumb}
@@ -117,7 +133,7 @@ import { API_BASE } from '@/lib/api';
                   <span class="font-serif italic text-lg text-ink truncate">
                     ${highlight(cleaned, q)}
                   </span>
-                  <span class="mono text-xs text-ink-3 shrink-0">${h.usda_symbol}</span>
+                  <span class="mono text-xs text-ink-3 shrink-0">${escText(h.usda_symbol)}</span>
                 </div>
                 <div class="mt-1 flex items-baseline gap-2 text-sm text-ink-2">
                   ${common ? `<span>${highlight(common, q)}</span>` : ''}
