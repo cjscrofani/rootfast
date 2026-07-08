@@ -1,4 +1,9 @@
-# Security headers for all routes (Cloudflare Pages `_headers`).
+# Security headers for STATIC ASSETS (Cloudflare Pages `_headers`).
+#
+# The Astro Cloudflare adapter runs in advanced mode (a bundled `_worker.js`),
+# and Pages only applies this file to genuine static assets — not to pages
+# served through the Worker. Page responses get the same headers from
+# src/middleware.ts; keep the two CSPs in sync.
 #
 # CSP origins reflect what the site actually loads:
 #   - api.rootfast.org        client-side search fetches (connect-src)
