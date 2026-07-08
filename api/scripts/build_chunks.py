@@ -48,6 +48,8 @@ TABLE_ORDER = [
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
     "soil_by_county",
+    "plant_endemic_state",
+    "county_taxa_summary",
 ]
 
 # Tables small enough to bundle into one seed chunk.

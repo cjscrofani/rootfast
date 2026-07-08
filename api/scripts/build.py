@@ -62,6 +62,9 @@ TABLE_ORDER = [
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
     "soil_by_county",
+    # Derived summary tables — populated after merge (see populate_summaries).
+    "plant_endemic_state",
+    "county_taxa_summary",
 ]
 
 
@@ -112,6 +115,15 @@ def merge_source(db: sqlite3.Connection, name: str, src_path: Path) -> dict[str,
     db.execute("COMMIT")
     db.execute("DETACH DATABASE src")
     return counts
+
+
+def populate_summaries(db: sqlite3.Connection) -> None:
+    """Fill the derived summary tables (schema/006) from the merged base data."""
+    sql = (API_ROOT / "scripts" / "populate_summaries.sql").read_text(encoding="utf-8")
+    db.executescript(sql)
+    endemic = db.execute("SELECT COUNT(*) FROM plant_endemic_state").fetchone()[0]
+    counties = db.execute("SELECT COUNT(*) FROM county_taxa_summary").fetchone()[0]
+    print(f"  ✓ summaries populated: {endemic} endemic taxa, {counties} county rows")
 
 
 def reenable_fks_and_verify(db: sqlite3.Connection) -> None:
@@ -267,6 +279,7 @@ def main() -> None:
         merge_source(db, name, path)
 
     reenable_fks_and_verify(db)
+    populate_summaries(db)
     validate(db)
 
     size_mb = OUT_DB.stat().st_size / (1024 * 1024)
