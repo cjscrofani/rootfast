@@ -368,12 +368,13 @@ export const api = {
     const q = qs.toString();
     return getJson<CountiesListResponse>(`/v1/counties${q ? `?${q}` : ''}`);
   },
-  county: (fips: string, opts?: { limit?: number; offset?: number; nativity?: string; sort?: string }) => {
+  county: (fips: string, opts?: { limit?: number; offset?: number; nativity?: string; sort?: string; max_temperature_f?: number }) => {
     const qs = new URLSearchParams();
     if (opts?.limit  !== undefined) qs.set('limit',  String(opts.limit));
     if (opts?.offset !== undefined) qs.set('offset', String(opts.offset));
     if (opts?.nativity) qs.set('nativity', opts.nativity);
     if (opts?.sort)     qs.set('sort',     opts.sort);
+    if (opts?.max_temperature_f !== undefined) qs.set('max_temperature_f', String(opts.max_temperature_f));
     const q = qs.toString();
     return getJson<CountyPlantsResponse>(
       `/v1/counties/${encodeURIComponent(fips)}/plants${q ? `?${q}` : ''}`
@@ -438,6 +439,8 @@ export const api = {
 
   hardinessByZip: (zip: string) =>
     getJson<HardinessByZipResponse>(`/v1/hardiness/zip/${encodeURIComponent(zip)}`),
+  hardinessByCounty: (fips: string) =>
+    getJson<HardinessByCountyResponse>(`/v1/hardiness/county/${encodeURIComponent(fips)}`),
 
   /* ---------- Soil (SSURGO) -------------------------------------- */
   soilByCounty: (fips: string) =>
@@ -535,6 +538,18 @@ export interface HardinessByZipResponse {
     temp_max_f: number;
     description: string;
   };
+}
+
+export interface HardinessByCountyResponse {
+  county: { county_fips: string; county_name: string; state_code: string };
+  zone: {
+    zone_code: string;
+    zone_class_code: number;
+    temp_min_f: number;
+    temp_max_f: number;
+    description: string;
+  } | null;
+  note?: string;
 }
 
 export interface CountyTaxaCountRow {
