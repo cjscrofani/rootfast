@@ -278,6 +278,9 @@ export interface PlantInCountyRow {
 export interface CountyPlantsResponse {
   county: CountyHeader;
   count: number;
+  /** Total taxa in the county under the current filter (for pagination). */
+  total: number;
+  paging?: { limit: number; offset: number; has_more: boolean };
   plants: PlantInCountyRow[];
 }
 

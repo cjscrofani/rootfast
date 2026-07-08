@@ -67,9 +67,11 @@ const sort       = VALID_SORT.has(rawSort) ? rawSort : 'sci';
 let data: CountyPlantsResponse;
 let totalUnfilteredCount = 0;
 try {
-  // Two parallel calls: the filtered page for the listing, and an unfiltered
-  // count for the header. Both round-trip through the same edge cache so
-  // repeat loads stay cheap.
+  // The filtered page for the listing. When a nativity filter is active we
+  // also need the *unfiltered* county total for the header, which the filtered
+  // page response can't give us — fetch it with a cheap limit:1 call (shares
+  // the same edge cache). With no filter the two totals are identical, so we
+  // skip the extra round-trip entirely.
   const [pageData, headerCount] = await Promise.all([
     api.county(match.county_fips, {
       limit:    PAGE_SIZE,
@@ -77,10 +79,12 @@ try {
       nativity: nativity ?? undefined,
       sort,
     }),
-    api.county(match.county_fips, { limit: 1, offset: 0 }),
+    nativity
+      ? api.county(match.county_fips, { limit: 1, offset: 0 })
+      : Promise.resolve(null),
   ]);
   data = pageData;
-  totalUnfilteredCount = (headerCount as any).total ?? headerCount.count ?? 0;
+  totalUnfilteredCount = headerCount ? headerCount.total : pageData.total;
 } catch (err) {
   if (err instanceof ApiError && err.status === 404) {
     return notFoundPage(`No plants for county “${match.county_fips}”.`);
@@ -92,7 +96,7 @@ const { county, plants } = data;
 const stateName = stateNameOf(county.state_code);
 
 // Pagination math.
-const totalUnderFilter = (data as any).total ?? plants.length;
+const totalUnderFilter = data.total;
 const totalPages       = Math.max(1, Math.ceil(totalUnderFilter / PAGE_SIZE));
 const clampedPage      = Math.min(page, totalPages);
 const showingFrom      = totalUnderFilter === 0 ? 0 : offset + 1;
