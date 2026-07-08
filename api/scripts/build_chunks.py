@@ -66,7 +66,7 @@ def _lit(v: object) -> str:
 def write_chunk(chunks_dir: Path, idx: int, name_hint: str, content: str) -> None:
     chunks_dir.mkdir(parents=True, exist_ok=True)
     path = chunks_dir / f"{idx:03d}_{name_hint}.sql"
-    path.write_text(content)
+    path.write_text(content, encoding="utf-8")
     size_mb = path.stat().st_size / (1024 * 1024)
     print(f"  {path.name} ({size_mb:.1f} MB)")
 

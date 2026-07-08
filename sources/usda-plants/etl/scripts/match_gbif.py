@@ -75,7 +75,11 @@ def _binomial(sci: str | None) -> str | None:
     # Preserve subspecies/variety markers if present.
     rebuilt = parts[0] + " " + parts[1]
     for i, p in enumerate(parts[2:], start=2):
-        if p in ("subsp.", "ssp.", "var.", "f.") and i + 1 < len(parts):
+        # Normalize the rank marker by stripping its trailing dot so 'var'
+        # and 'var.' both match — keeps this in lockstep with the _binomial
+        # in build_sqlite.py and fetch_inat_photos.py (a divergence here
+        # corrupts the GBIF/iNat join key for infraspecific taxa).
+        if p.rstrip(".") in ("ssp", "subsp", "var", "f") and i + 1 < len(parts):
             rebuilt += " " + p + " " + parts[i + 1]
             break
     return rebuilt

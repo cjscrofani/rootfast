@@ -610,14 +610,17 @@ def insert_distribution(db: sqlite3.Connection, symbol_to_id: dict[str, int]) ->
         db.execute("SELECT usda_plant_id, id FROM plants WHERE usda_plant_id IS NOT NULL").fetchall()
     )
 
-    seen: set[tuple[int, str]] = set()
-    inserted = 0
+    # (plant_id, county_fips) -> nativity. USDA can list the same county
+    # more than once for a plant with differing nativity (e.g. Native in one
+    # record, Introduced in another). Resolve any such conflict to "Both" so
+    # the result is deterministic and semantically correct regardless of the
+    # order chunks/rows happen to be read in.
+    nativity_by_key: dict[tuple[int, str], str] = {}
     skipped_no_county = skipped_no_plant = 0
 
-    db.execute("BEGIN")
     for state_code, distribution in chunks:
         name_to_loc_id = name_by_state.get(state_code, {})
-        state_inserted = 0
+        state_rows = 0
         state_skip_county = state_skip_plant = 0
         for row in distribution:
             county_name = row.get("country_subdivision_name")
@@ -637,20 +640,25 @@ def insert_distribution(db: sqlite3.Connection, symbol_to_id: dict[str, int]) ->
             if nativity not in ("Native", "Introduced", "Both"):
                 continue
             key = (plant_id, fips)
-            if key in seen:
-                continue
-            seen.add(key)
-            db.execute(
-                "INSERT INTO plant_county_distribution (plant_id, county_fips, nativity) VALUES (?, ?, ?)",
-                (plant_id, fips, nativity),
-            )
-            inserted += 1
-            state_inserted += 1
+            prev = nativity_by_key.get(key)
+            if prev is None:
+                nativity_by_key[key] = nativity
+                state_rows += 1
+            elif prev != nativity:
+                nativity_by_key[key] = "Both"
         skipped_no_county += state_skip_county
         skipped_no_plant += state_skip_plant
-        print(f"  {state_code}: {state_inserted:,} rows "
+        print(f"  {state_code}: {state_rows:,} rows "
               f"(no_county={state_skip_county}, no_plant={state_skip_plant})")
+
+    db.execute("BEGIN")
+    for (plant_id, fips), nativity in nativity_by_key.items():
+        db.execute(
+            "INSERT INTO plant_county_distribution (plant_id, county_fips, nativity) VALUES (?, ?, ?)",
+            (plant_id, fips, nativity),
+        )
     db.execute("COMMIT")
+    inserted = len(nativity_by_key)
     print(f"plant_county_distribution: {inserted:,} total "
           f"(skipped no_county={skipped_no_county}, no_plant={skipped_no_plant})")
 

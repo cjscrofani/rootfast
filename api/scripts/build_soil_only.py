@@ -30,7 +30,7 @@ def main() -> None:
     cols = [c[1] for c in db.execute("PRAGMA table_info(soil_by_county)").fetchall()]
     col_list = ",".join(cols)
     rows = db.execute(f"SELECT {col_list} FROM soil_by_county").fetchall()
-    with OUT.open("w") as f:
+    with OUT.open("w", encoding="utf-8") as f:
         f.write("-- Soil delta — DELETE + INSERT for soil_by_county.\n")
         f.write("DELETE FROM soil_by_county;\n")
         f.write(f"-- soil_by_county: {len(rows)} rows\n")
