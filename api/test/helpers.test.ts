@@ -10,6 +10,8 @@ import {
   clampInt,
   cacheControl,
   computeEtag,
+  parseLatLon,
+  lonScale,
 } from '../src/index';
 
 const params = (qs: string) => new URLSearchParams(qs);
@@ -209,6 +211,27 @@ describe('cacheControl', () => {
   });
   it('emits max-age/s-maxage for a cached profile', () => {
     expect(cacheControl('long')).toBe('public, max-age=3600, s-maxage=86400');
+  });
+});
+
+describe('parseLatLon', () => {
+  const u = (qs: string) => new URL(`https://x/?${qs}`);
+  it('accepts a valid pair', () => {
+    expect(parseLatLon(u('lat=45.5&lon=-111.2'))).toEqual({ lat: 45.5, lon: -111.2 });
+  });
+  it('rejects out-of-range or missing values', () => {
+    expect('error' in parseLatLon(u('lat=200&lon=0'))).toBe(true);
+    expect('error' in parseLatLon(u('lat=45&lon=999'))).toBe(true);
+    expect('error' in parseLatLon(u('lon=10'))).toBe(true);
+    expect('error' in parseLatLon(u('lat=abc&lon=10'))).toBe(true);
+  });
+});
+
+describe('lonScale', () => {
+  it('is 1 at the equator and shrinks toward the poles', () => {
+    expect(lonScale(0)).toBeCloseTo(1, 10);
+    expect(lonScale(60)).toBeCloseTo(0.5, 6);
+    expect(lonScale(90)).toBeCloseTo(0, 10);
   });
 });
 

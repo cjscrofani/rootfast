@@ -544,6 +544,57 @@ export const OPENAPI_SPEC = {
       },
     },
 
+    "/v1/hardiness/point": {
+      get: {
+        tags: ["hardiness"],
+        operationId: "hardinessByPoint",
+        summary: "Hardiness zone nearest a coordinate.",
+        description:
+          "Nearest-neighbour lookup for an arbitrary lat/lon. Currently resolves " +
+          "to the closest county centroid that has a mapped zone (`resolution: " +
+          "\"county-centroid\"`); the contract is stable for a future PRISM " +
+          "point-resolution upgrade.",
+        parameters: [
+          { name: "lat", in: "query", required: true, schema: { type: "number", minimum: -90, maximum: 90, example: 45.677 } },
+          { name: "lon", in: "query", required: true, schema: { type: "number", minimum: -180, maximum: 180, example: -111.038 } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    query: {
+                      type: "object",
+                      properties: { lat: { type: "number" }, lon: { type: "number" } },
+                    },
+                    resolution: { type: "string", example: "county-centroid" },
+                    note: { type: "string" },
+                    nearest_county: {
+                      type: "object",
+                      properties: {
+                        county_fips: { type: "string" },
+                        county_name: { type: "string" },
+                        state_code: { type: "string" },
+                        centroid_lat: { type: "number" },
+                        centroid_lon: { type: "number" },
+                        approx_distance_mi: { type: "number" },
+                      },
+                    },
+                    zone: { $ref: "#/components/schemas/HardinessZone" },
+                  },
+                },
+              },
+            },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+          "404": { $ref: "#/components/responses/NotFound" },
+        },
+      },
+    },
+
     "/v1/soil/counties": {
       get: {
         tags: ["counties"],

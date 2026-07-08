@@ -140,6 +140,7 @@ async function routeRequest(req: Request, env: Env): Promise<Response> {
         if (parts[2] === "counties" && !parts[3])           return await listHardinessCounties(env, url);
         if (parts[2] === "zip"      && parts[3] && !parts[4]) return await hardinessByZip(env, parts[3]);
         if (parts[2] === "county"   && parts[3] && !parts[4]) return await hardinessByCounty(env, parts[3]);
+        if (parts[2] === "point"    && !parts[3])            return await hardinessByPoint(env, url);
       }
 
       // /v1/soil/...
@@ -1832,6 +1833,90 @@ async function listHardinessCounties(env: Env, url: URL): Promise<Response> {
   return json({
     count: counties.length,
     counties,
+  }, 200, "long");
+}
+
+/** Validate a lat/lon pair from query params. Returns numbers or an error. */
+export function parseLatLon(url: URL): { lat: number; lon: number } | { error: string } {
+  const lat = Number.parseFloat(url.searchParams.get("lat") ?? "");
+  const lon = Number.parseFloat(url.searchParams.get("lon") ?? "");
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    return { error: 'Provide a numeric "lat" between -90 and 90.' };
+  }
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+    return { error: 'Provide a numeric "lon" between -180 and 180.' };
+  }
+  return { lat, lon };
+}
+
+/** Latitude scale factor for an equirectangular distance approximation:
+ *  a degree of longitude shrinks by cos(latitude). Good enough for
+ *  nearest-neighbour ranking over the continental US. */
+export function lonScale(lat: number): number {
+  return Math.cos((lat * Math.PI) / 180);
+}
+
+/**
+ * GET /v1/hardiness/point?lat=&lon=
+ *
+ * Nearest-neighbour hardiness lookup for an arbitrary coordinate. Ranks county
+ * centroids by an equirectangular (cos-scaled) squared distance computed in
+ * SQL — no trig functions needed on the D1 side — and returns the closest
+ * county that has a mapped zone.
+ *
+ * This is county-centroid resolution today; the response `resolution` field
+ * documents that, and the contract is forward-compatible with the planned
+ * PRISM point resolution (see docs/HARDINESS_POINT.md).
+ */
+async function hardinessByPoint(env: Env, url: URL): Promise<Response> {
+  const parsed = parseLatLon(url);
+  if ("error" in parsed) return badRequest(parsed.error);
+  const { lat, lon } = parsed;
+  const scale = lonScale(lat);
+
+  const row = await env.DB.prepare(
+    `SELECT c.county_fips, c.county_name, c.state_code, c.centroid_lat, c.centroid_lon,
+            hz.zone_code, hz.zone_class_code, hz.temp_min_f, hz.temp_max_f, hz.description,
+            ( (c.centroid_lat - ?1) * (c.centroid_lat - ?1)
+            + ((c.centroid_lon - ?2) * ?3) * ((c.centroid_lon - ?2) * ?3) ) AS dist_sq
+       FROM counties c
+       JOIN hardiness_zones_by_county hzc ON hzc.county_fips = c.county_fips
+       JOIN hardiness_zones           hz  ON hz.zone_code    = hzc.zone_code
+      WHERE c.centroid_lat IS NOT NULL AND c.centroid_lon IS NOT NULL
+      ORDER BY dist_sq ASC
+      LIMIT 1`
+  ).bind(lat, lon, scale).first<{
+    county_fips: string; county_name: string; state_code: string;
+    centroid_lat: number; centroid_lon: number;
+    zone_code: string; zone_class_code: number;
+    temp_min_f: number; temp_max_f: number; description: string;
+    dist_sq: number;
+  }>();
+
+  if (!row) return notFound("No county hardiness data available to resolve the point.");
+
+  // ~69 statute miles per degree of latitude; adequate for a rough distance.
+  const approxMi = Math.round(Math.sqrt(Number(row.dist_sq)) * 69 * 10) / 10;
+
+  return json({
+    query: { lat, lon },
+    resolution: "county-centroid",
+    note: "Resolved to the nearest county-centroid hardiness sample. PRISM point-level resolution is planned — see docs/HARDINESS_POINT.md.",
+    nearest_county: {
+      county_fips:  row.county_fips,
+      county_name:  row.county_name,
+      state_code:   row.state_code,
+      centroid_lat: row.centroid_lat,
+      centroid_lon: row.centroid_lon,
+      approx_distance_mi: approxMi,
+    },
+    zone: {
+      zone_code:       row.zone_code,
+      zone_class_code: row.zone_class_code,
+      temp_min_f:      row.temp_min_f,
+      temp_max_f:      row.temp_max_f,
+      description:     row.description,
+    },
   }, 200, "long");
 }
 
