@@ -34,7 +34,7 @@ beyond attribution.
 | Counties with hardiness zone | **3,199 / 3,227** |
 | GBIF match coverage | **100 %** |
 | iNaturalist photos | **26,125** (94 %) |
-| Schema version | **005** |
+| Schema version | **006** |
 
 ## Repo layout
 

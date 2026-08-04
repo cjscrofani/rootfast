@@ -1647,17 +1647,17 @@ async function listCountyTaxaCounts(env: Env, url: URL): Promise<Response> {
   if (state && !/^[A-Z]{2}$/.test(state)) {
     return badRequest(`Invalid state code "${state}". Use the two-letter USPS code.`);
   }
+  // Reads the precomputed county_taxa_summary (migration 006) instead of
+  // scanning plant_county_distribution per county.
   const sql = state
-    ? `SELECT c.county_fips, c.county_name, c.state_code,
-              (SELECT COUNT(DISTINCT plant_id) FROM plant_county_distribution pcd
-                WHERE pcd.county_fips = c.county_fips) AS taxa_count
+    ? `SELECT c.county_fips, c.county_name, c.state_code, s.taxa_count
          FROM counties c
+         JOIN county_taxa_summary s ON s.county_fips = c.county_fips
         WHERE c.state_code = ?
         ORDER BY c.county_fips`
-    : `SELECT c.county_fips, c.county_name, c.state_code,
-              (SELECT COUNT(DISTINCT plant_id) FROM plant_county_distribution pcd
-                WHERE pcd.county_fips = c.county_fips) AS taxa_count
+    : `SELECT c.county_fips, c.county_name, c.state_code, s.taxa_count
          FROM counties c
+         JOIN county_taxa_summary s ON s.county_fips = c.county_fips
         ORDER BY c.county_fips`;
   const rows = await (state
     ? env.DB.prepare(sql).bind(state).all()
@@ -1673,23 +1673,17 @@ async function listCountyPhotoCoverage(env: Env, url: URL): Promise<Response> {
   if (state && !/^[A-Z]{2}$/.test(state)) {
     return badRequest(`Invalid state code "${state}".`);
   }
+  // Reads the precomputed county_taxa_summary (migration 006) instead of
+  // grouping plant_county_distribution × plants for every county.
   const sql = state
-    ? `SELECT c.county_fips, c.county_name, c.state_code,
-              COUNT(DISTINCT pcd.plant_id) AS taxa_count,
-              COUNT(DISTINCT CASE WHEN p.photo_url IS NOT NULL THEN p.id END) AS photo_count
+    ? `SELECT c.county_fips, c.county_name, c.state_code, s.taxa_count, s.photo_count
          FROM counties c
-         LEFT JOIN plant_county_distribution pcd ON pcd.county_fips = c.county_fips
-         LEFT JOIN plants p ON p.id = pcd.plant_id
+         JOIN county_taxa_summary s ON s.county_fips = c.county_fips
         WHERE c.state_code = ?
-        GROUP BY c.county_fips
         ORDER BY c.county_fips`
-    : `SELECT c.county_fips, c.county_name, c.state_code,
-              COUNT(DISTINCT pcd.plant_id) AS taxa_count,
-              COUNT(DISTINCT CASE WHEN p.photo_url IS NOT NULL THEN p.id END) AS photo_count
+    : `SELECT c.county_fips, c.county_name, c.state_code, s.taxa_count, s.photo_count
          FROM counties c
-         LEFT JOIN plant_county_distribution pcd ON pcd.county_fips = c.county_fips
-         LEFT JOIN plants p ON p.id = pcd.plant_id
-        GROUP BY c.county_fips
+         JOIN county_taxa_summary s ON s.county_fips = c.county_fips
         ORDER BY c.county_fips`;
   const rows = await (state
     ? env.DB.prepare(sql).bind(state).all()
@@ -1710,25 +1704,14 @@ async function listCountyPhotoCoverage(env: Env, url: URL): Promise<Response> {
 /** Per-state count of endemic taxa — plants recorded in this state ONLY.
  *  Used by /explore/state-endemics. */
 async function listStateEndemicCounts(env: Env): Promise<Response> {
+  // Reads the precomputed plant_endemic_state (migration 006). Accepted-only,
+  // so endemic_count matches the taxa the /endemic-taxa endpoint returns.
   const rows = await env.DB.prepare(
-    `WITH plant_states AS (
-       SELECT pcd.plant_id, c.state_code
-         FROM plant_county_distribution pcd
-         JOIN counties c ON c.county_fips = pcd.county_fips
-        GROUP BY pcd.plant_id, c.state_code
-     ),
-     endemics AS (
-       SELECT plant_id, MIN(state_code) AS only_state
-         FROM plant_states
-        GROUP BY plant_id
-       HAVING COUNT(DISTINCT state_code) = 1
-     )
-     SELECT s.state_code, s.state_name, s.country,
+    `SELECT s.state_code, s.state_name, s.country,
             COUNT(e.plant_id) AS endemic_count
        FROM states s
-       LEFT JOIN endemics e ON e.only_state = s.state_code
-      GROUP BY s.state_code
-     HAVING COUNT(e.plant_id) > 0
+       JOIN plant_endemic_state e ON e.state_code = s.state_code
+      GROUP BY s.state_code, s.state_name, s.country
       ORDER BY endemic_count DESC, s.state_name`
   ).all();
   const states = rows.results ?? [];
@@ -1745,37 +1728,19 @@ async function endemicTaxaByState(env: Env, code: string, url: URL): Promise<Res
 
   const { limit, offset } = parsePaging(url, { defaultLimit: 50, maxLimit: 5000 });
 
-  // CTE: plants whose entire distribution lives inside one state.
+  // Reads the precomputed plant_endemic_state (migration 006), which already
+  // holds accepted-only endemics — no scan of plant_county_distribution.
   const totalRow = await env.DB.prepare(
-    `WITH endemics AS (
-       SELECT pcd.plant_id
-         FROM plant_county_distribution pcd
-         JOIN counties c ON c.county_fips = pcd.county_fips
-        GROUP BY pcd.plant_id
-       HAVING COUNT(DISTINCT c.state_code) = 1
-          AND MIN(c.state_code) = ?
-     )
-     SELECT COUNT(*) AS n
-       FROM plants p
-       JOIN endemics e ON e.plant_id = p.id
-      WHERE p.is_synonym = 0 AND p.is_excluded = 0`
+    `SELECT COUNT(*) AS n FROM plant_endemic_state WHERE state_code = ?`
   ).bind(sc).first<{ n: number }>();
   const total = totalRow?.n ?? 0;
 
   const rows = await env.DB.prepare(
-    `WITH endemics AS (
-       SELECT pcd.plant_id
-         FROM plant_county_distribution pcd
-         JOIN counties c ON c.county_fips = pcd.county_fips
-        GROUP BY pcd.plant_id
-       HAVING COUNT(DISTINCT c.state_code) = 1
-          AND MIN(c.state_code) = ?
-     )
-     SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
+    `SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
             p.photo_thumb_url
-       FROM plants p
-       JOIN endemics e ON e.plant_id = p.id
-      WHERE p.is_synonym = 0 AND p.is_excluded = 0
+       FROM plant_endemic_state e
+       JOIN plants p ON p.id = e.plant_id
+      WHERE e.state_code = ?
       ORDER BY p.scientific_name
       LIMIT ? OFFSET ?`
   ).bind(sc, limit, offset).all();
