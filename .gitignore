@@ -65,6 +65,10 @@ sources/usda-hardiness/etl/processed/
 sources/usda-soil/etl/raw/**
 sources/usda-soil/etl/processed/
 
+# Census ZCTA ETL — raw relationship file is 6.5 MB; regenerable
+sources/census-zcta/etl/raw/**
+sources/census-zcta/etl/processed/
+
 # Unified API artefacts (chunks, .db, .sql dumps)
 api/processed/
 

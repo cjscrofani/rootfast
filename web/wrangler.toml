@@ -1,0 +1,18 @@
+# Cloudflare Pages configuration for rootfast-web.
+#
+# Pages reads this file from the project's root directory (web/) and treats it
+# as the source of truth for the settings below, for both production and
+# preview deployments. Build settings (root directory, build command) still
+# live in the dashboard.
+name = "rootfast-web"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-06-24"
+
+# Service binding to the API Worker. Server-rendered pages call the API
+# through it (src/lib/api.ts) instead of fetching https://api.rootfast.org
+# over the public internet. The API can then tell the site's own calls apart
+# from outside clients (they arrive without cf-connecting-ip), so they no
+# longer share — and exhaust — a single per-IP rate-limit bucket.
+[[services]]
+binding = "API"
+service = "rootfast-api"

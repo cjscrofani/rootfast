@@ -55,6 +55,7 @@ export const GET: APIRoute = async () => {
 
   // Families — pull live from the API. Fail soft so a transient API blip
   // doesn't take the whole sitemap offline.
+  let complete = true;
   try {
     const families = await api.families();
     for (const f of families.families) {
@@ -65,8 +66,9 @@ export const GET: APIRoute = async () => {
       });
     }
   } catch {
-    /* sitemap still useful without families */
+    /* sitemap still useful without families — but do not cache it */
+    complete = false;
   }
 
-  return sitemapResponse(renderUrlset(entries));
+  return sitemapResponse(renderUrlset(entries), complete);
 };

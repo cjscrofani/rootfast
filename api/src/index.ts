@@ -13,6 +13,8 @@
  *   GET /v1/states/:state_code/plants?limit&offset         — plants in state (paginated)
  *   GET /v1/states/:state_code/counties                    — counties in state with taxa counts
  *   GET /v1/search?q=...
+ *   GET /v1/zip/:zip                                        — ZIP → counties + hardiness zone
+ *   GET /v1/zip/:zip/plants                                 — plants recorded in the ZIP's counties
  *
  * Listing endpoints (/v1/plants, /v1/counties, /v1/states/{x}/plants, /v1/counties/{x}/plants)
  * support `?format=json|csv|ndjson` for bulk export. Default is json.
@@ -23,9 +25,38 @@
  * the underlying data changes. The dataset only updates when we re-import a
  * SQLite chunk, so most endpoints are aggressively edge-cached (s-maxage)
  * with shorter browser caches (max-age) to keep clients fresh-ish.
+ *
+ * Cost guards (see ./guard.ts): Cloudflare does not cache a Worker's own
+ * responses, so the `s-maxage` above only takes effect because fetch() below
+ * stores and serves them through the Cache API. On a miss, every D1 query is
+ * metered; expensive answers are also kept in a global response store, and
+ * once the day's row budget (DAILY_ROWS_BUDGET) is spent the API stops
+ * querying D1 until 00:00 UTC and answers 503 `daily_budget_exhausted`.
  */
 
 import { OPENAPI_SPEC } from "./openapi";
+import {
+  Meter, meteredDb, canonicalKey, clientBucket, parseBudget, budgetSpent, rowsToday,
+  currentUsage, countRequest, syncUsage, syncDue, rollDay, reserveRows, budgetBusy,
+  secondsUntilUtcMidnight, readStored, writeStored, worthStoring, storeCandidate,
+  BULK_MAX_ROWS, RESERVE_ROWS, RESERVE_ROWS_FINDER, type StoredResponse,
+} from "./guard";
+
+/** Bump when a response shape or query result changes without a new dataset
+ *  version, so cached answers from the previous deploy are not served. */
+const CACHE_EPOCH = "2";
+
+/** Minimal shape of the Workers execution context (waitUntil only). */
+interface ExecCtx { waitUntil(p: Promise<unknown>): void }
+
+/** Query parameters that are not §F filters but that some handler reads. */
+const ROUTE_PARAMS = ["limit", "offset", "format", "sort", "q", "state", "scope", "lat", "lon"] as const;
+
+/** Every query parameter any handler reads. Anything else is ignored by the
+ *  handlers and therefore left out of cache keys. */
+function knownParams(): ReadonlySet<string> {
+  return new Set<string>([...FILTER_PARAMS, ...ROUTE_PARAMS]);
+}
 
 /** Cloudflare Workers ratelimit binding. Minimal local shape — keeps us
  *  off the experimental @cloudflare/workers-types `RateLimit` import. */
@@ -36,13 +67,16 @@ interface RateLimitBinding {
 export interface Env {
   DB: D1Database;
   DATASET_VERSION: string;
+  /** Rows the API may read from D1 per UTC day. Unset → 4,000,000 (80% of
+   *  the Workers Free allowance). "0" disables the budget. */
+  DAILY_ROWS_BUDGET?: string;
   RATELIMIT_DEFAULT: RateLimitBinding;
   RATELIMIT_BULK:    RateLimitBinding;
   RATELIMIT_SEARCH:  RateLimitBinding;
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx?: ExecCtx): Promise<Response> {
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
@@ -50,27 +84,203 @@ export default {
       return errorResponse("method_not_allowed", "Only GET/HEAD/POST supported.", 405);
     }
 
-    const res = await routeRequest(req, env);
-    return await applyEtag(req, res);
+    const url = new URL(req.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+    // POST exists for the plant finder only. Without this a POST to any other
+    // route would run its GET handler with no caching at all.
+    if (req.method === "POST" && !(parts[0] === "v1" && parts[1] === "plants" && parts[2] === "search" && !parts[3])) {
+      return errorResponse("method_not_allowed", "POST is only supported on /v1/plants/search.", 405);
+    }
+    const later = (p: Promise<unknown>) => { if (ctx) ctx.waitUntil(p); else void p.catch(() => {}); };
+
+    // 1. Edge cache. Costs no D1 rows, so it is answered before the rate
+    //    limiter and the budget — an edge-cached answer is always available.
+    const key = isCacheableRequest(req, parts)
+      ? canonicalKey(url, `${env.DATASET_VERSION}.${CACHE_EPOCH}`, knownParams())
+      : null;
+    const edge = edgeCache();
+    if (key && edge) {
+      const hit = await edge.match(key).catch(() => undefined);
+      if (hit) {
+        countRequest();
+        return conditional(req, tagCache(hit, "edge"));
+      }
+    }
+
+    // 2. Everything below may read D1: meter it against the daily budget.
+    const budget = parseBudget(env.DAILY_ROWS_BUDGET);
+    rollDay();                                                    // a new UTC day starts a new count
+    if (currentUsage().lastSync === 0) await syncUsage(env.DB);   // not yet synced today: learn the total
+    const meter = new Meter();
+    const menv: Env = { ...env, DB: meteredDb(env.DB, meter) };
+
+    const routed = await routeRequest(req, menv, url, parts, key, budget);
+    const res = await withEtag(routed.res);
+
+    // 3. Keep a successful, cacheable answer: at the edge for this location,
+    //    and in the global store when it was expensive to compute.
+    if (key && res.status === 200 && isStorable(res)) {
+      if (edge) later(edge.put(key, res.clone()).catch(() => {}));
+      if (!routed.fromStore && storeCandidate(
+        meter.rows, res.headers.get("cache-control") || "", res.headers.get("content-disposition"), key,
+      )) {
+        later(storeIfWorth(menv.DB, key, res.clone(), meter.rows));
+      }
+    }
+
+    countRequest();
+    if (syncDue(currentUsage(), Date.now(), budget)) later(syncUsage(env.DB, Date.now(), budget));
+    return conditional(req, tagCache(res, routed.fromStore ? "store" : "miss"));
   },
 };
 
-async function routeRequest(req: Request, env: Env): Promise<Response> {
-  const url = new URL(req.url);
-  const parts = url.pathname.split("/").filter(Boolean);
+/** GET/HEAD under /v1 can be answered from cache. /healthz is always live. */
+function isCacheableRequest(req: Request, parts: string[]): boolean {
+  return (req.method === "GET" || req.method === "HEAD") && parts[0] === "v1" && parts.length > 1;
+}
 
+/** The Workers edge cache, or null outside the Workers runtime (unit tests). */
+function edgeCache(): Cache | null {
+  const c = (globalThis as { caches?: { default?: Cache } }).caches;
+  return c?.default ?? null;
+}
+
+/** A response the caches may keep: a shared-cache lifetime and not `no-store`. */
+function isStorable(res: Response): boolean {
+  const cc = res.headers.get("cache-control") || "";
+  return !cc.includes("no-store") && /s-maxage=[1-9]/.test(cc);
+}
+
+/** Copy a response with an `x-rootfast-cache` header saying where it came
+ *  from: `edge` (location cache), `store` (global store) or `miss` (computed). */
+function tagCache(res: Response, source: "edge" | "store" | "miss"): Response {
+  const h = new Headers(res.headers);
+  h.set("x-rootfast-cache", source);
+  return new Response(res.body, { status: res.status, headers: h });
+}
+
+/** Save an expensive answer in the global response store. The caller has
+ *  already checked storeCandidate(), so the body is only read for answers
+ *  that can qualify. */
+async function storeIfWorth(db: D1Database, key: string, res: Response, rowsCost: number): Promise<void> {
+  const body = await res.text();
+  const bytes = new TextEncoder().encode(body).length;
+  if (!worthStoring(rowsCost, bytes)) return;
+  await writeStored(db, key, {
+    content_type:        res.headers.get("content-type") || "application/json; charset=utf-8",
+    cache_control:       res.headers.get("cache-control") || "",
+    etag:                res.headers.get("etag"),
+    content_disposition: res.headers.get("content-disposition"),
+    body,
+  }, rowsCost);
+}
+
+function fromStored(s: StoredResponse): Response {
+  const h: Record<string, string> = {
+    "content-type":  s.content_type,
+    "cache-control": s.cache_control,
+    ...corsHeaders(),
+  };
+  if (s.etag) h["etag"] = s.etag;
+  if (s.content_disposition) h["content-disposition"] = s.content_disposition;
+  return new Response(s.body, { status: 200, headers: h });
+}
+
+/** 503 sent once the day's D1 row budget is spent. Cached answers keep
+ *  flowing (they never reach this point); everything else waits for 00:00 UTC. */
+function budgetExhaustedResponse(): Response {
+  const retry = secondsUntilUtcMidnight();
+  return new Response(
+    JSON.stringify({
+      error: {
+        code: "daily_budget_exhausted",
+        message:
+          "Rootfast has used today's database allowance. Cached responses are still served; " +
+          "everything else resumes at 00:00 UTC. For the whole dataset in one download, see " +
+          "https://github.com/cjscrofani/rootfast/releases",
+      },
+      retry_after: retry,
+    }),
+    {
+      status: 503,
+      headers: {
+        "content-type":  "application/json; charset=utf-8",
+        "retry-after":   String(retry),
+        "cache-control": "no-store",
+        ...corsHeaders(),
+      },
+    },
+  );
+}
+
+/** 503 sent when the budget is NOT spent but requests already running hold
+ *  the rest of it. Unlike `daily_budget_exhausted`, retrying soon works. */
+function busyResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      error: { code: "busy", message: "The service is at capacity for a moment. Retry in a few seconds." },
+      retry_after: 5,
+    }),
+    {
+      status: 503,
+      headers: {
+        "content-type":  "application/json; charset=utf-8",
+        "retry-after":   "5",
+        "cache-control": "no-store",
+        ...corsHeaders(),
+      },
+    },
+  );
+}
+
+async function routeRequest(
+  req: Request, env: Env, url: URL, parts: string[], key: string | null, budget: number,
+): Promise<{ res: Response; fromStore?: boolean }> {
+  let release: (() => void) | null = null;
   try {
-    if (parts[0] === "healthz") return await healthz(env);
-    if (parts[0] !== "v1") return notFound();
+    if (parts[0] === "healthz") return { res: await healthz(env, budget) };
+    if (parts[0] !== "v1") return { res: notFound() };
 
-    // Rate limiting (no-op for /v1/openapi.json and /v1/docs — those are
-    // cheap and frequently polled). The limiter to use is picked by route
-    // shape: bulk exports are tightly capped; search is moderately capped;
-    // everything else uses the generous default.
-    if (parts[1] !== "openapi.json" && parts[1] !== "docs") {
-      const denial = await enforceRateLimit(req, env, url, parts);
-      if (denial) return denial;
+    // The spec and the docs page are static: no dataset query, no limiter,
+    // no budget.
+    if (parts[1] === "openapi.json" && !parts[2]) return { res: openapiJson() };
+    if (parts[1] === "docs"         && !parts[2]) return { res: scalarHtml() };
+
+    // Rate limiting. The limiter is picked by route shape: bulk exports and
+    // the plant finder are tightly capped; search is moderately capped;
+    // everything else uses the default.
+    const denial = await enforceRateLimit(req, env, url, parts);
+    if (denial) return { res: denial };
+
+    // Global response store: answers that were expensive to compute once.
+    // Read before the budget check — it costs one row, and it is what keeps
+    // the popular expensive pages working after the budget is spent.
+    if (key) {
+      const stored = await readStored(env.DB, key);
+      if (stored) return { res: fromStored(stored), fromStore: true };
     }
+
+    // Daily D1 row budget — see ./guard.ts. Rows are set aside for this
+    // request before it runs, so a burst cannot pass the check together and
+    // then overshoot; the reservation is replaced by the true count when the
+    // request finishes.
+    if (budgetSpent(budget)) return { res: budgetExhaustedResponse() };
+    // Other requests in flight already hold what is left of the budget: ask
+    // the client to retry in a few seconds rather than "at midnight". A lone
+    // request always runs, however little is left.
+    if (budgetBusy(budget)) return { res: busyResponse() };
+    release = reserveRows(req.method === "POST" ? RESERVE_ROWS_FINDER : RESERVE_ROWS);
+
+    return { res: await routeV1(req, env, url, parts) };
+  } catch (err) {
+    console.error("Unhandled error:", err);
+    return { res: errorResponse("internal_error", "Unexpected error processing the request.", 500) };
+  } finally {
+    release?.();
+  }
+}
+
+async function routeV1(req: Request, env: Env, url: URL, parts: string[]): Promise<Response> {
 
       // /v1/plants/...
       if (parts[1] === "plants") {
@@ -133,6 +343,12 @@ async function routeRequest(req: Request, env: Env): Promise<Response> {
         return await search(env, url.searchParams.get("q") ?? "");
       }
 
+      // /v1/zip/{zip}[/plants] — locality lookups keyed by US ZIP code
+      if (parts[1] === "zip" && parts[2]) {
+        if (!parts[3])                          return await zipLookup(env, parts[2]);
+        if (parts[3] === "plants" && !parts[4]) return await plantsByZip(env, parts[2], url);
+      }
+
       // /v1/hardiness/...
       if (parts[1] === "hardiness") {
         if (parts[2] === "zones"    && !parts[3])           return await listHardinessZones(env);
@@ -149,13 +365,6 @@ async function routeRequest(req: Request, env: Env): Promise<Response> {
         if (parts[2] === "county"   && parts[3] && !parts[4]) return await soilByCounty(env, parts[3]);
       }
 
-      // OpenAPI spec + Scalar UI
-      if (parts[1] === "openapi.json" && !parts[2]) return openapiJson();
-      if (parts[1] === "docs"         && !parts[2]) return scalarHtml();
-  } catch (err) {
-    console.error("Unhandled error:", err);
-    return errorResponse("internal_error", "Unexpected error processing the request.", 500);
-  }
   return notFound();
 }
 
@@ -167,6 +376,7 @@ function corsHeaders(): Record<string, string> {
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "content-type, accept, if-none-match",
     "access-control-max-age":       "86400",
+    "access-control-expose-headers": "etag, retry-after, link, x-total-count, x-rootfast-cache",
     "vary":                          "Origin",
   };
 }
@@ -212,38 +422,41 @@ export async function computeEtag(body: string): Promise<string> {
   return `W/"${hex.slice(0, 16)}"`;
 }
 
-/** Wrap an already-built Response with ETag handling. If the request's
- *  If-None-Match matches the computed tag, return 304 with no body. */
-async function applyEtag(req: Request, res: Response): Promise<Response> {
+/** Attach a weak ETag to a successful, cacheable response. The tagged 200 is
+ *  what the caches store; conditional() turns it into a 304 per request. */
+async function withEtag(res: Response): Promise<Response> {
   if (res.status !== 200) return res;                       // only successful, body-bearing responses
   const cc = res.headers.get("cache-control") || "";
   if (cc.includes("no-store") || cc === "")  return res;    // skip uncacheable
-  if (res.headers.get("etag")) return res;                  // already set by handler
+  if (res.headers.get("etag")) return res;                  // already set (handler or store)
   // Skip bulk downloads (CSV/NDJSON/GeoJSON exports). They carry a
-  // Content-Disposition attachment header and can be many MB; buffering the
-  // whole body to SHA-1 it would defeat streaming and burn CPU per request.
+  // Content-Disposition attachment header and can be several MB; hashing
+  // the whole body would burn CPU per request.
   if (res.headers.get("content-disposition")?.includes("attachment")) return res;
 
   const text = await res.clone().text();
   if (!text) return res;
-  const etag = await computeEtag(text);
-
-  // Match → 304
-  const ifNoneMatch = req.headers.get("if-none-match");
-  if (ifNoneMatch && ifNoneMatch === etag) {
-    const h = new Headers();
-    h.set("etag",          etag);
-    h.set("cache-control", cc);
-    h.set("vary",          res.headers.get("vary") || "Origin");
-    // Carry CORS so 304s aren't blocked.
-    for (const [k, v] of Object.entries(corsHeaders())) h.set(k, v);
-    return new Response(null, { status: 304, headers: h });
-  }
-
-  // Attach ETag to the 200 response.
   const h = new Headers(res.headers);
-  h.set("etag", etag);
+  h.set("etag", await computeEtag(text));
   return new Response(text, { status: res.status, headers: h });
+}
+
+/** If the request's If-None-Match matches the response's ETag, answer 304
+ *  with no body; otherwise pass the response through. */
+function conditional(req: Request, res: Response): Response {
+  const etag = res.headers.get("etag");
+  const ifNoneMatch = req.headers.get("if-none-match");
+  if (res.status !== 200 || !etag || !ifNoneMatch || ifNoneMatch !== etag) return res;
+
+  const h = new Headers();
+  h.set("etag",          etag);
+  h.set("cache-control", res.headers.get("cache-control") || "");
+  h.set("vary",          res.headers.get("vary") || "Origin");
+  const source = res.headers.get("x-rootfast-cache");
+  if (source) h.set("x-rootfast-cache", source);
+  // Carry CORS so 304s aren't blocked.
+  for (const [k, v] of Object.entries(corsHeaders())) h.set(k, v);
+  return new Response(null, { status: 304, headers: h });
 }
 
 /** Pick the right limiter based on the route, call it, and return a 429
@@ -254,28 +467,35 @@ async function enforceRateLimit(
   url: URL,
   parts: string[],
 ): Promise<Response | null> {
-  // Per-IP keying. CF sets `cf-connecting-ip` on every request; fall back
-  // to a per-deployment static key so a missing header doesn't break the
-  // limiter (would happen in local `wrangler dev` against a non-CF runner).
-  const ip = req.headers.get("cf-connecting-ip") || "unknown";
+  // Per-client keying. Cloudflare's edge sets `cf-connecting-ip` on every
+  // request that arrives from the internet, and a client cannot remove it. A
+  // request WITHOUT it therefore did not come through the edge: it is the
+  // website calling over its service binding (or local `wrangler dev`).
+  // Those calls are not limited here, because they would all share one
+  // bucket and starve each other. NOTE: that leaves the website's traffic
+  // bounded only by the daily row budget unless a rate-limit / challenge
+  // rule exists on the rootfast.org zone (see docs/ROLLOUT.md).
+  const ip = req.headers.get("cf-connecting-ip");
+  if (!ip) return null;
+  const client = clientBucket(ip);
   const format = url.searchParams.get("format")?.toLowerCase();
   const isBulkExport = format === "csv" || format === "ndjson";
 
-  // Search routes (both GET /v1/search and POST /v1/plants/search) live in
-  // the moderate bucket regardless of format.
-  const isSearch =
-    parts[1] === "search" ||
-    (parts[1] === "plants" && parts[2] === "search");
+  // The plant finder (POST /v1/plants/search) aggregates whole states and is
+  // never cached, so it shares the tight bulk limiter (under its own key).
+  const isFinder = req.method === "POST";
+  const isSearch = parts[1] === "search";
 
   let limiter: RateLimitBinding;
-  let tier: "default" | "bulk" | "search";
-  if (isBulkExport)       { limiter = env.RATELIMIT_BULK;    tier = "bulk";   }
+  let tier: "default" | "bulk" | "search" | "finder";
+  if (isFinder)           { limiter = env.RATELIMIT_BULK;    tier = "finder"; }
+  else if (isBulkExport)  { limiter = env.RATELIMIT_BULK;    tier = "bulk";   }
   else if (isSearch)      { limiter = env.RATELIMIT_SEARCH;  tier = "search"; }
   else                    { limiter = env.RATELIMIT_DEFAULT; tier = "default";}
 
   // The simple ratelimit binding only keys on the string we pass — combine
-  // tier+ip so the three limiters don't share a single counter accidentally.
-  const { success } = await limiter.limit({ key: `${tier}:${ip}` });
+  // tier+client so the limiters don't share a single counter accidentally.
+  const { success } = await limiter.limit({ key: `${tier}:${client}` });
   if (success) return null;
 
   return new Response(
@@ -284,10 +504,12 @@ async function enforceRateLimit(
         code: "rate_limited",
         message:
           tier === "bulk"
-            ? "Bulk-export quota exceeded (5 req/min/IP). Slow down or filter the export."
+            ? "Bulk-export quota exceeded (2 req/min/IP). Slow down, filter the export, or download the dataset release."
+            : tier === "finder"
+            ? "Plant-finder quota exceeded (2 req/min/IP)."
             : tier === "search"
-            ? "Search quota exceeded (60 req/min/IP)."
-            : "Request quota exceeded (120 req/min/IP).",
+            ? "Search quota exceeded (30 req/min/IP)."
+            : "Request quota exceeded (60 req/min/IP).",
       },
       tier,
       retry_after: 60,
@@ -341,7 +563,18 @@ type Ctx = {
   where: string[];
   binds: unknown[];
   needsChars: boolean;
+  /** Set only with `deferNativity`: the validated `nativity` values, for
+   *  callers that apply the filter against a summary table themselves. */
+  nativity?: string[];
 };
+
+/** Parse and validate a comma-separated `nativity` value. */
+export function parseNativity(raw: string): string[] | null {
+  const values = raw.split(",").map(v => v.trim()).filter(Boolean);
+  if (values.length === 0) return null;
+  for (const v of values) if (!(NATIVITY_VALUES as readonly string[]).includes(v)) return null;
+  return values;
+}
 
 const NATIVITY_VALUES   = ["Native", "Introduced", "Both"] as const;
 const GROWTH_HABITS     = ["Tree","Shrub","Subshrub","Vine","Forb/herb","Forb","Graminoid","Nonvascular","Lichenous"] as const;
@@ -354,6 +587,11 @@ const TOXICITY          = ["None","Slight","Moderate","Severe"] as const;
 const LIFESPAN          = ["Short","Moderate","Long"] as const;
 const COMMERCIAL_AVAIL  = ["No Known Source","Routinely Available","Field Collections Only","Contracting Only"] as const;
 const WETLAND_CODES     = ["OBL","FACW","FAC","FACU","UPL","NL"] as const;
+/** iNaturalist license codes as stored on plants.photo_license. "pd" is
+ *  iNat's public-domain mark; "gfdl" appears on a single legacy photo. */
+export const PHOTO_LICENSES = ["cc0","pd","cc-by","cc-by-sa","cc-by-nd","cc-by-nc","cc-by-nc-sa","cc-by-nc-nd","gfdl"] as const;
+/** The subset of PHOTO_LICENSES that permits commercial reuse. */
+export const COMMERCIAL_PHOTO_LICENSES = ["cc0","pd","cc-by","cc-by-sa","cc-by-nd"] as const;
 
 function pushEnum(ctx: Ctx, col: string, raw: string, allowed: readonly string[]): boolean {
   const values = raw.split(",").map(v => v.trim()).filter(Boolean);
@@ -398,7 +636,10 @@ function pushBool(ctx: Ctx, col: string, raw: string): boolean {
 
 /** Build SQL filters from `?...` query params. `ctx.needsChars` set when a
  *  filter touches `plant_characteristics` — caller adds the LEFT JOIN. */
-export function buildFilters(searchParams: URLSearchParams): Ctx | { error: string } {
+export function buildFilters(
+  searchParams: URLSearchParams,
+  opts: { deferNativity?: boolean } = {},
+): Ctx | { error: string } {
   const ctx: Ctx = { where: [], binds: [], needsChars: false };
 
   const eat = (param: string, ok: boolean): string | null => {
@@ -441,7 +682,27 @@ export function buildFilters(searchParams: URLSearchParams): Ctx | { error: stri
   }
 
   // Distribution-level
-  if (v("nativity") && (err = eat("nativity", pushEnum(ctx, "pcd.nativity", v("nativity")!, NATIVITY_VALUES)))) return { error: err };
+  if (v("nativity")) {
+    if (opts.deferNativity) {
+      const values = parseNativity(v("nativity")!);
+      if (!values) return { error: 'Invalid value for "nativity".' };
+      ctx.nativity = values;
+    } else if ((err = eat("nativity", pushEnum(ctx, "pcd.nativity", v("nativity")!, NATIVITY_VALUES)))) {
+      return { error: err };
+    }
+  }
+
+  // Photo licensing. iNaturalist photos carry the photographer's own CC
+  // license; many are NC (non-commercial). `photo_license` restricts rows to
+  // the listed license codes (comma-separated, OR). `has_photo` is a plain
+  // boolean on the presence of any photo.
+  if (v("photo_license") && (err = eat("photo_license", pushEnum(ctx, "p.photo_license", v("photo_license")!.toLowerCase(), PHOTO_LICENSES)))) return { error: err };
+  if (v("has_photo")) {
+    const raw = v("has_photo")!.toLowerCase().trim();
+    if (["1","true","yes"].includes(raw))      ctx.where.push("p.photo_url IS NOT NULL");
+    else if (["0","false","no"].includes(raw)) ctx.where.push("p.photo_url IS NULL");
+    else return { error: 'Invalid value for "has_photo". Use 1/0, true/false, or yes/no.' };
+  }
 
   // Characteristics — enums
   const charEnum = (param: string, col: string, allowed: readonly string[]): string | null => {
@@ -513,7 +774,8 @@ export function buildFilters(searchParams: URLSearchParams): Ctx | { error: stri
 
   // Distribution-range filters: how many counties a plant is recorded in,
   // nationally. Useful for "rarities" / "widespread" queries on /v1/plants.
-  // Implemented as a correlated subquery against plant_county_distribution.
+  // Reads the precomputed plant_range_summary (migration 008) through its
+  // county_count index instead of grouping plant_county_distribution.
   const minCounties = v("min_counties");
   const maxCounties = v("max_counties");
   if (minCounties || maxCounties) {
@@ -527,13 +789,12 @@ export function buildFilters(searchParams: URLSearchParams): Ctx | { error: stri
     const binds: unknown[] = [];
     if (min !== null) { conds.push(">= ?"); binds.push(min); }
     if (max !== null) { conds.push("<= ?"); binds.push(max); }
-    // Subquery returns plant_ids whose distinct county count satisfies the bounds.
+    // Subquery returns plant_ids whose county count satisfies the bounds.
     ctx.where.push(
       `p.id IN (
          SELECT plant_id
-           FROM plant_county_distribution
-          GROUP BY plant_id
-         HAVING ${conds.map(c => `COUNT(DISTINCT county_fips) ${c}`).join(" AND ")}
+           FROM plant_range_summary
+          WHERE ${conds.map(c => `county_count ${c}`).join(" AND ")}
        )`
     );
     ctx.binds.push(...binds);
@@ -546,6 +807,7 @@ export function buildFilters(searchParams: URLSearchParams): Ctx | { error: stri
  *  so clients can read what was actually applied. */
 const FILTER_PARAMS = new Set([
   "family","genus","rank","growth_habit","duration","nativity","wetland_code","bloom_period",
+  "photo_license","has_photo",
   "drought_tolerance","shade_tolerance","moisture_use","growth_rate",
   "toxicity","lifespan","commercial_availability","fire_tolerance",
   "salinity_tolerance","nitrogen_fixation",
@@ -562,7 +824,8 @@ const FILTER_PARAMS = new Set([
 function filtersEcho(url: URL): Record<string, string> | null {
   const out: Record<string, string> = {};
   for (const [k, v] of url.searchParams) {
-    if (FILTER_PARAMS.has(k) && v) out[k] = v;
+    // First value wins — the one the handlers and the cache key use.
+    if (FILTER_PARAMS.has(k) && v && !(k in out)) out[k] = v;
   }
   return Object.keys(out).length ? out : null;
 }
@@ -621,6 +884,9 @@ function formattedResponse(
     cache?: CacheProfile;
     filename: string;       // for Content-Disposition
     columns?: string[];     // optional CSV column order
+    /** For CSV / NDJSON, which have no envelope: lets the response say how
+     *  many rows exist in total and where the next page is. */
+    page?: { url: URL; total: number; limit: number; offset: number };
   },
 ): Response {
   const status = opts.status ?? 200;
@@ -632,6 +898,7 @@ function formattedResponse(
     "cache-control":       cacheControl(cache),
     "content-disposition": `attachment; filename="${opts.filename}.${format}"`,
     ...corsHeaders(),
+    ...bulkPagingHeaders(opts.page, rows.length),
   };
 
   if (format === "csv") {
@@ -643,17 +910,103 @@ function formattedResponse(
   return new Response(toNdjson(rows), { status, headers });
 }
 
+/** `x-total-count`, plus a `link: <...>; rel="next"` when rows remain past
+ *  this page. Bulk exports are capped per call (BULK_MAX_ROWS); without these
+ *  a truncated CSV would look complete. Exported for tests. */
+export function bulkPagingHeaders(
+  page: { url: URL; total: number; limit: number; offset: number } | undefined,
+  returned: number,
+): Record<string, string> {
+  if (!page) return {};
+  const out: Record<string, string> = { "x-total-count": String(page.total) };
+  const nextOffset = page.offset + returned;
+  if (returned > 0 && nextOffset < page.total) {
+    const next = new URL(page.url.toString());
+    next.searchParams.set("limit", String(page.limit));
+    next.searchParams.set("offset", String(nextOffset));
+    out["link"] = `<${next.toString()}>; rel="next"`;
+  }
+  return out;
+}
+
 /* --------------------------- Endpoints --------------------------- */
 
-async function healthz(env: Env): Promise<Response> {
-  const row = await env.DB.prepare(
-    "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-  ).first<{ value: string }>();
+/**
+ * GET /healthz
+ *
+ * Liveness plus provenance. Everything beyond `ok` comes from the
+ * `schema_meta` key/value table, which migrations fill with the schema
+ * version and `api/scripts/populate_meta.sql` fills with dataset counts
+ * and source pull dates at build time. `dataset_version` falls back to the
+ * DATASET_VERSION Worker var when the build has not stamped one.
+ */
+async function healthz(env: Env, budget: number): Promise<Response> {
+  // /healthz is exempt from the limiter and the budget so it always answers,
+  // which makes it an open path to D1. schema_meta only changes on a deploy
+  // or data load, so each isolate reads it at most once a minute.
+  const now = Date.now();
+  if (!healthMemo || now - healthMemo.at >= HEALTH_META_TTL_MS) {
+    const rows = await env.DB.prepare("SELECT key, value FROM schema_meta").all<{ key: string; value: string }>();
+    healthMemo = { at: now, meta: buildHealthMeta(rows.results ?? []) };
+  }
+  const meta = healthMemo.meta;
   return json({
     ok: true,
-    dataset_version: env.DATASET_VERSION,
-    schema_version: row?.value ?? null,
+    dataset_version: meta.get("dataset_version") ?? env.DATASET_VERSION,
+    dataset_date:    meta.get("dataset_date") ?? null,
+    schema_version:  meta.get("schema_version") ?? null,
+    api_version:     OPENAPI_SPEC.info.version,
+    sources: {
+      usda_plants_pulled:       meta.get("source_usda_plants_pulled") ?? null,
+      usda_hardiness_edition:   meta.get("source_usda_hardiness_edition") ?? null,
+      census_zcta_vintage:      meta.get("source_census_zcta_vintage") ?? null,
+      inaturalist_photos_pulled: meta.get("source_inaturalist_photos_pulled") ?? null,
+    },
+    counts: {
+      taxa:                 metaInt(meta, "count_taxa"),
+      states:               metaInt(meta, "count_states"),
+      counties:             metaInt(meta, "count_counties"),
+      distribution_records: metaInt(meta, "count_distribution"),
+      photos:               metaInt(meta, "count_photos"),
+      hardiness_zips:       metaInt(meta, "count_hardiness_zips"),
+      hardiness_counties:   metaInt(meta, "count_hardiness_counties"),
+      zip_counties:         metaInt(meta, "count_zip_counties"),
+    },
+    usage: usageReport(budget),
+    releases: "https://github.com/cjscrofani/rootfast/releases",
   }, 200, "none");
+}
+
+/** Today's D1 usage as this isolate knows it. Other isolates report in
+ *  batches (every FLUSH_ROWS rows or FLUSH_MS), so the figure can trail the
+ *  true total by a couple of minutes. */
+function usageReport(budget: number): Record<string, unknown> {
+  const u = currentUsage();
+  return {
+    day:               u.day,
+    rows_read:         rowsToday(),
+    daily_rows_budget: Number.isFinite(budget) ? budget : null,
+    budget_exhausted:  budgetSpent(budget),
+    resets_in_seconds: secondsUntilUtcMidnight(),
+  };
+}
+
+const HEALTH_META_TTL_MS = 60_000;
+let healthMemo: { at: number; meta: Map<string, string> } | null = null;
+
+/** Collapse schema_meta rows into a map. Exported for tests. */
+export function buildHealthMeta(rows: { key: string; value: string }[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const r of rows) if (r.key && r.value != null) m.set(r.key, String(r.value));
+  return m;
+}
+
+/** Read an integer meta value, or null when absent / unparsable. */
+export function metaInt(meta: Map<string, string>, key: string): number | null {
+  const raw = meta.get(key);
+  if (raw == null) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 async function plantBySymbol(env: Env, symbol: string): Promise<Response> {
@@ -712,12 +1065,12 @@ async function listPlants(env: Env, url: URL): Promise<Response> {
   const f = buildFilters(url.searchParams);
   if ("error" in f) return badRequest(f.error);
 
-  // For bulk downloads (CSV/NDJSON) default to no limit (cap at 50k);
-  // JSON keeps the same 5000/10000 pagination as state plants.
+  // Bulk downloads (CSV/NDJSON) return up to BULK_MAX_ROWS per call and page
+  // with `offset`; JSON keeps its 5000/10000 pagination.
   const isBulk = format !== "json";
   const { limit, offset } = parsePaging(url, {
-    defaultLimit: isBulk ? 50000 : 5000,
-    maxLimit:     isBulk ? 50000 : 10000,
+    defaultLimit: isBulk ? BULK_MAX_ROWS : 5000,
+    maxLimit:     isBulk ? BULK_MAX_ROWS : 10000,
   });
 
   const charJoin = f.needsChars
@@ -731,32 +1084,56 @@ async function listPlants(env: Env, url: URL): Promise<Response> {
   const extraWhere = f.where.length ? " AND " + f.where.join(" AND ") : "";
 
   // Plant rows (one row per taxon, no distribution rollup).
-  const sql =
-    `SELECT p.usda_symbol, p.scientific_name, p.scientific_name_canonical,
+  const columns =
+    `p.usda_symbol, p.scientific_name, p.scientific_name_canonical,
             p.common_name, p.family, p.genus, p.rank,
             p.gbif_taxon_key, p.gbif_canonical_name,
             p.gbif_match_type, p.gbif_match_status,
             p.is_synonym, p.accepted_plant_id,
-            p.photo_url, p.photo_thumb_url, p.photo_license, p.photo_attribution
-       FROM plants p
-       ${charJoin}
-      WHERE p.is_synonym = 0
-        AND p.is_excluded = 0
-        ${extraWhere}
-      ORDER BY p.scientific_name
-      LIMIT ? OFFSET ?`;
-  const rows = await env.DB.prepare(sql).bind(...f.binds, limit, offset).all();
-  const plants = (rows.results ?? []) as Record<string, unknown>[];
+            p.photo_url, p.photo_thumb_url, p.photo_license, p.photo_attribution`;
 
-  const totalSql =
-    `SELECT COUNT(*) AS n
-       FROM plants p
-       ${charJoin}
-      WHERE p.is_synonym = 0
-        AND p.is_excluded = 0
-        ${extraWhere}`;
-  const totalRow = await env.DB.prepare(totalSql).bind(...f.binds).first<{ n: number }>();
-  const total = totalRow?.n ?? 0;
+  let plants: Record<string, unknown>[];
+  let total: number;
+  if (f.where.length === 0) {
+    // Unfiltered: walk plant_name_rank (accepted taxa in scientific-name
+    // order, migration 008) and stop after one page, instead of reading and
+    // sorting all of `plants`. The total is the highest rank — ranks are
+    // dense, so that IS the accepted-taxa count, read as one index row and
+    // always consistent with the rows returned.
+    const rows = await env.DB.prepare(
+      `SELECT ${columns}
+         FROM plant_name_rank r
+         JOIN plants p ON p.id = r.plant_id
+        ORDER BY r.name_rank
+        LIMIT ? OFFSET ?`
+    ).bind(limit, offset).all();
+    plants = (rows.results ?? []) as Record<string, unknown>[];
+    total = (await env.DB.prepare(
+      "SELECT MAX(name_rank) AS n FROM plant_name_rank"
+    ).first<{ n: number | null }>())?.n ?? 0;
+  } else {
+    const rows = await env.DB.prepare(
+      `SELECT ${columns}
+         FROM plants p
+         ${charJoin}
+        WHERE p.is_synonym = 0
+          AND p.is_excluded = 0
+          ${extraWhere}
+        ORDER BY p.scientific_name
+        LIMIT ? OFFSET ?`
+    ).bind(...f.binds, limit, offset).all();
+    plants = (rows.results ?? []) as Record<string, unknown>[];
+
+    const totalRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS n
+         FROM plants p
+         ${charJoin}
+        WHERE p.is_synonym = 0
+          AND p.is_excluded = 0
+          ${extraWhere}`
+    ).bind(...f.binds).first<{ n: number }>();
+    total = totalRow?.n ?? 0;
+  }
 
   return formattedResponse(format, plants, {
     count: plants.length,
@@ -767,6 +1144,7 @@ async function listPlants(env: Env, url: URL): Promise<Response> {
   }, {
     cache:    isBulk ? "long" : "medium",
     filename: "rootfast-plants",
+    page:     { url, total, limit, offset },
   });
 }
 
@@ -1053,20 +1431,27 @@ async function plantByGbif(env: Env, raw: string): Promise<Response> {
 }
 
 async function plantRandom(env: Env): Promise<Response> {
-  // RANDOM() on D1 is OK for small tables; ours is ~5-25k plants.
-  // Filter to actionable rank + accepted (non-synonym, non-excluded), prefer
-  // ones with a photo so the random pick looks good.
-  const row = await env.DB.prepare(
-    `SELECT usda_symbol, scientific_name, common_name, family,
-            photo_thumb_url, photo_url
-       FROM plants
-      WHERE is_synonym = 0
-        AND is_excluded = 0
-        AND photo_url IS NOT NULL
-        AND rank IN ('Species','Subspecies','Variety','Form')
-      ORDER BY RANDOM()
+  // An accepted taxon with a photo, so the random pick looks good.
+  // `ORDER BY RANDOM()` over `plants` read all ~27,700 rows on every call.
+  // Instead pick a random position in plant_name_rank (accepted taxa in name
+  // order, migration 008) and take the first taxon with a photo at or after
+  // it — a handful of rows. Wraps to the start if the tail has none.
+  const max = (await env.DB.prepare(
+    "SELECT MAX(name_rank) AS m FROM plant_name_rank"
+  ).first<{ m: number | null }>())?.m ?? 0;
+  if (!max) return notFound("No plants in catalogue.");
+  const pick = (from: number) => env.DB.prepare(
+    `SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
+            p.photo_thumb_url, p.photo_url
+       FROM plant_name_rank r
+       JOIN plants p ON p.id = r.plant_id
+      WHERE r.name_rank >= ?1
+        AND p.photo_url IS NOT NULL
+        AND p.rank IN ('Species','Subspecies','Variety','Form')
+      ORDER BY r.name_rank
       LIMIT 1`
-  ).first();
+  ).bind(from).first();
+  const row = (await pick(1 + Math.floor(Math.random() * max))) ?? (await pick(1));
   if (!row) return notFound("No plants in catalogue.");
   return json({ plant: row }, 200, "rotating");
 }
@@ -1075,18 +1460,28 @@ async function plantsByCounty(env: Env, fips: string, url: URL): Promise<Respons
   const format = parseFormat(url);
   if (typeof format === "object") return badRequest(format.error);
 
-  const county = await env.DB.prepare(
-    "SELECT county_fips, county_name, state_code FROM counties WHERE county_fips = ?"
-  ).bind(fips).first();
-  if (!county) return notFound(`No county with FIPS "${fips}".`);
+  // County header plus its precomputed accepted-taxa counts (migration 008).
+  const head = await env.DB.prepare(
+    `SELECT c.county_fips, c.county_name, c.state_code,
+            s.accepted_count, s.native_count, s.introduced_count, s.both_count
+       FROM counties c
+       LEFT JOIN county_taxa_summary s ON s.county_fips = c.county_fips
+      WHERE c.county_fips = ?`
+  ).bind(fips).first<{
+    county_fips: string; county_name: string; state_code: string;
+    accepted_count: number | null; native_count: number | null;
+    introduced_count: number | null; both_count: number | null;
+  }>();
+  if (!head) return notFound(`No county with FIPS "${fips}".`);
+  const county = { county_fips: head.county_fips, county_name: head.county_name, state_code: head.state_code };
 
-  const f = buildFilters(url.searchParams);
+  const f = buildFilters(url.searchParams, { deferNativity: true });
   if ("error" in f) return badRequest(f.error);
 
   const isBulk = format !== "json";
   const { limit, offset } = parsePaging(url, {
-    defaultLimit: isBulk ? 50000 : 50,
-    maxLimit:     isBulk ? 50000 : 1000,
+    defaultLimit: isBulk ? BULK_MAX_ROWS : 50,
+    maxLimit:     isBulk ? BULK_MAX_ROWS : 1000,
   });
   const sortClause = parseSortCounty(url);
   if ("error" in sortClause) return badRequest(sortClause.error);
@@ -1094,35 +1489,47 @@ async function plantsByCounty(env: Env, fips: string, url: URL): Promise<Respons
   const charJoin = f.needsChars
     ? "LEFT JOIN plant_characteristics pc ON pc.plant_id = p.id"
     : "";
+  const nat = f.nativity ?? null;
+  const natWhere = nat ? ` AND cp.nativity IN (${nat.map(() => "?").join(",")})` : "";
+  const natBinds = nat ?? [];
   const extraWhere = f.where.length ? " AND " + f.where.join(" AND ") : "";
 
-  // Total under the same filter scope.
-  const totalSql =
-    `SELECT COUNT(*) AS n
-       FROM plant_county_distribution pcd
-       JOIN plants p ON p.id = pcd.plant_id
-       ${charJoin}
-      WHERE pcd.county_fips = ?
-        AND p.is_synonym = 0
-        AND p.is_excluded = 0
-        ${extraWhere}`;
-  const totalRow = await env.DB.prepare(totalSql).bind(fips, ...f.binds).first<{ n: number }>();
-  const total = totalRow?.n ?? 0;
+  // Total under the same filter scope. With no filter beyond nativity it is
+  // a sum of the precomputed per-nativity counts (each record carries exactly
+  // one nativity); otherwise count the county's rows in county_plants.
+  let total: number;
+  if (f.where.length === 0 && head.accepted_count !== null) {
+    total = countyTotalFromSummary(head, nat);
+  } else {
+    const totalRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS n
+         FROM county_plants cp
+         JOIN plants p ON p.id = cp.plant_id
+         ${charJoin}
+        WHERE cp.county_fips = ?
+          ${natWhere}
+          ${extraWhere}`
+    ).bind(fips, ...natBinds, ...f.binds).first<{ n: number }>();
+    total = totalRow?.n ?? 0;
+  }
 
+  // county_plants holds accepted taxa only, clustered by (county, name_rank),
+  // so the default scientific-name order walks the primary key and stops
+  // after one page instead of reading and sorting the whole county.
+  const orderBy = sortClause.value === "p.scientific_name" ? "cp.name_rank" : sortClause.value;
   const sql =
     `SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
             p.photo_thumb_url, p.photo_license,
-            pcd.nativity
-       FROM plant_county_distribution pcd
-       JOIN plants p ON p.id = pcd.plant_id
+            cp.nativity
+       FROM county_plants cp
+       JOIN plants p ON p.id = cp.plant_id
        ${charJoin}
-      WHERE pcd.county_fips = ?
-        AND p.is_synonym = 0
-        AND p.is_excluded = 0
+      WHERE cp.county_fips = ?
+        ${natWhere}
         ${extraWhere}
-      ORDER BY ${sortClause.value}
+      ORDER BY ${orderBy}
       LIMIT ? OFFSET ?`;
-  const rows = await env.DB.prepare(sql).bind(fips, ...f.binds, limit, offset).all();
+  const rows = await env.DB.prepare(sql).bind(fips, ...natBinds, ...f.binds, limit, offset).all();
   const plants = (rows.results ?? []) as Record<string, unknown>[];
 
   return formattedResponse(format, plants, {
@@ -1136,7 +1543,35 @@ async function plantsByCounty(env: Env, fips: string, url: URL): Promise<Respons
   }, {
     cache:    "medium",
     filename: `rootfast-county-${fips}-plants`,
+    page:     { url, total, limit, offset },
   });
+}
+
+/** A county's accepted-taxa total, optionally restricted to nativity values,
+ *  from its county_taxa_summary row. Exported for tests. */
+export function countyTotalFromSummary(
+  s: { accepted_count: number | null; native_count: number | null; introduced_count: number | null; both_count: number | null },
+  nativity: string[] | null,
+): number {
+  if (!nativity) return Number(s.accepted_count ?? 0);
+  const want = new Set(nativity);
+  return (want.has("Native")     ? Number(s.native_count ?? 0)     : 0)
+       + (want.has("Introduced") ? Number(s.introduced_count ?? 0) : 0)
+       + (want.has("Both")       ? Number(s.both_count ?? 0)       : 0);
+}
+
+/** SQL for a state_plants rollup restricted to the requested nativity values.
+ *  The inputs are validated enum values, so the result holds no user text.
+ *  Exported for tests. */
+export function stateRollupSql(nativity: string[] | null): {
+  native: string; introduced: string; both: string; counties: string; where: string;
+} {
+  const want = nativity ? new Set(nativity) : null;
+  const native     = !want || want.has("Native")     ? "sp.native_counties"     : "0";
+  const introduced = !want || want.has("Introduced") ? "sp.introduced_counties" : "0";
+  const both       = !want || want.has("Both")       ? "sp.both_counties"       : "0";
+  const counties   = want ? `(${native} + ${introduced} + ${both})` : "sp.county_count";
+  return { native, introduced, both, counties, where: want ? ` AND ${counties} > 0` : "" };
 }
 
 /** Sort options for county-plant listings — county listings have no county
@@ -1231,6 +1666,7 @@ async function listCounties(env: Env, url: URL): Promise<Response> {
   }, {
     cache:    "long",
     filename: stateFilter ? `rootfast-counties-${stateFilter.toUpperCase()}` : "rootfast-counties",
+    page:     { url, total, limit, offset },
   });
 }
 
@@ -1279,20 +1715,13 @@ async function listStates(env: Env): Promise<Response> {
   // States with no ingested distribution data are filtered out here. They
   // still exist in the `states` table (so /v1/states/{code} keeps working
   // for direct lookups) — only the list endpoint hides them.
+  // state_taxa_summary (migration 008) has a row only for states with
+  // distribution data, so the JOIN is also the filter.
   const states = await env.DB.prepare(
     `SELECT s.state_code, s.state_name, s.state_fips, s.country,
-            (SELECT COUNT(*) FROM counties c WHERE c.state_code = s.state_code) AS county_count,
-            (SELECT COUNT(DISTINCT pcd.plant_id)
-               FROM plant_county_distribution pcd
-               JOIN counties c ON c.county_fips = pcd.county_fips
-              WHERE c.state_code = s.state_code) AS taxa_count
+            t.county_count, t.taxa_count
        FROM states s
-      WHERE EXISTS (
-        SELECT 1
-          FROM plant_county_distribution pcd
-          JOIN counties c2 ON c2.county_fips = pcd.county_fips
-         WHERE c2.state_code = s.state_code
-      )
+       JOIN state_taxa_summary t ON t.state_code = s.state_code
       ORDER BY s.state_name`
   ).all();
 
@@ -1304,14 +1733,15 @@ async function listStates(env: Env): Promise<Response> {
 
 async function stateHeader(env: Env, code: string): Promise<Response> {
   const sc = code.toUpperCase();
+  // Counts come from state_taxa_summary (migration 008). A state with no
+  // distribution data has no summary row: count its counties, report 0 taxa.
   const state = await env.DB.prepare(
     `SELECT s.state_code, s.state_name, s.state_fips, s.country,
-            (SELECT COUNT(*) FROM counties c WHERE c.state_code = s.state_code) AS county_count,
-            (SELECT COUNT(DISTINCT pcd.plant_id)
-               FROM plant_county_distribution pcd
-               JOIN counties c ON c.county_fips = pcd.county_fips
-              WHERE c.state_code = s.state_code) AS taxa_count
+            COALESCE(t.county_count,
+                     (SELECT COUNT(*) FROM counties c WHERE c.state_code = s.state_code)) AS county_count,
+            COALESCE(t.taxa_count, 0) AS taxa_count
        FROM states s
+       LEFT JOIN state_taxa_summary t ON t.state_code = s.state_code
       WHERE s.state_code = ?1`
   ).bind(sc).first();
   if (!state) return notFound(`No state with code "${sc}".`);
@@ -1323,18 +1753,31 @@ async function plantsByState(env: Env, code: string, url: URL): Promise<Response
   if (typeof format === "object") return badRequest(format.error);
 
   const sc = code.toUpperCase();
-  const state = await env.DB.prepare(
-    "SELECT state_code, state_name, state_fips, country FROM states WHERE state_code = ?"
-  ).bind(sc).first();
-  if (!state) return notFound(`No state with code "${sc}".`);
+  // State header plus its precomputed counts (migration 008).
+  const head = await env.DB.prepare(
+    `SELECT s.state_code, s.state_name, s.state_fips, s.country,
+            t.county_count, t.accepted_count, t.native_count, t.introduced_count, t.both_count
+       FROM states s
+       LEFT JOIN state_taxa_summary t ON t.state_code = s.state_code
+      WHERE s.state_code = ?`
+  ).bind(sc).first<{
+    state_code: string; state_name: string; state_fips: string | null; country: string | null;
+    county_count: number | null; accepted_count: number | null; native_count: number | null;
+    introduced_count: number | null; both_count: number | null;
+  }>();
+  if (!head) return notFound(`No state with code "${sc}".`);
+  const state = {
+    state_code: head.state_code, state_name: head.state_name,
+    state_fips: head.state_fips, country: head.country,
+  };
 
-  const f = buildFilters(url.searchParams);
+  const f = buildFilters(url.searchParams, { deferNativity: true });
   if ("error" in f) return badRequest(f.error);
 
   const isBulk = format !== "json";
   const { limit, offset } = parsePaging(url, {
-    defaultLimit: isBulk ? 50000 : 50,
-    maxLimit:     isBulk ? 50000 : 10000,
+    defaultLimit: isBulk ? BULK_MAX_ROWS : 50,
+    maxLimit:     isBulk ? BULK_MAX_ROWS : 10000,
   });
   const sortClause = parseSortState(url);
   if ("error" in sortClause) return badRequest(sortClause.error);
@@ -1344,45 +1787,59 @@ async function plantsByState(env: Env, code: string, url: URL): Promise<Response
     : "";
   const extraWhere = f.where.length ? " AND " + f.where.join(" AND ") : "";
 
-  // Total taxa under the same filters + county count for the state.
-  const totalSql =
-    `SELECT COUNT(*) AS n FROM (
-       SELECT p.id
-         FROM plants p
-         JOIN plant_county_distribution pcd ON pcd.plant_id  = p.id
-         JOIN counties                  c   ON c.county_fips = pcd.county_fips
-         ${charJoin}
-        WHERE c.state_code = ?
-          AND p.is_synonym = 0
-          AND p.is_excluded = 0
-          ${extraWhere}
-        GROUP BY p.id
-     )`;
-  const [totalRow, countyCountRow] = await Promise.all([
-    env.DB.prepare(totalSql).bind(sc, ...f.binds).first<{ n: number }>(),
-    env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM counties WHERE state_code = ?"
-    ).bind(sc).first<{ n: number }>(),
-  ]);
-  const totalTaxa = totalRow?.n ?? 0;
+  // state_plants (migration 008) holds one row per accepted taxon per state
+  // with its county rollup, clustered in scientific-name order. A `nativity`
+  // filter keeps only the counties with those flags, exactly as filtering the
+  // distribution rows before aggregating did.
+  const nat = f.nativity ?? null;
+  const roll = stateRollupSql(nat);
 
+  // County count for the state (summary row, or a count for a state that has
+  // no distribution data and therefore no summary).
+  const countyCount = head.county_count ?? (await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM counties WHERE state_code = ?"
+  ).bind(sc).first<{ n: number }>())?.n ?? 0;
+
+  // Total taxa under the same filters: precomputed when the only filter is
+  // none or a single nativity value, counted from state_plants otherwise.
+  let totalTaxa: number;
+  if (f.where.length === 0 && !nat) {
+    totalTaxa = Number(head.accepted_count ?? 0);
+  } else if (f.where.length === 0 && nat && nat.length === 1 && head.accepted_count !== null) {
+    totalTaxa = Number(
+      nat[0] === "Native" ? head.native_count
+        : nat[0] === "Introduced" ? head.introduced_count
+        : head.both_count
+    ) || 0;
+  } else {
+    const totalRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS n
+         FROM state_plants sp
+         JOIN plants p ON p.id = sp.plant_id
+         ${charJoin}
+        WHERE sp.state_code = ?
+          ${roll.where}
+          ${extraWhere}`
+    ).bind(sc, ...f.binds).first<{ n: number }>();
+    totalTaxa = totalRow?.n ?? 0;
+  }
+
+  // The default order walks the primary key (state_code, scientific_name).
+  const orderBy = sortClause.value === "p.scientific_name" ? "sp.scientific_name" : sortClause.value;
   const pageSql =
     `SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
             p.photo_thumb_url,
-            COUNT(*)                                                        AS county_count,
-            SUM(CASE WHEN pcd.nativity = 'Native'     THEN 1 ELSE 0 END)    AS native_counties,
-            SUM(CASE WHEN pcd.nativity = 'Introduced' THEN 1 ELSE 0 END)    AS introduced_counties,
-            SUM(CASE WHEN pcd.nativity = 'Both'       THEN 1 ELSE 0 END)    AS both_counties
-       FROM plants p
-       JOIN plant_county_distribution pcd ON pcd.plant_id  = p.id
-       JOIN counties                  c   ON c.county_fips = pcd.county_fips
+            ${roll.counties}   AS county_count,
+            ${roll.native}     AS native_counties,
+            ${roll.introduced} AS introduced_counties,
+            ${roll.both}       AS both_counties
+       FROM state_plants sp
+       JOIN plants p ON p.id = sp.plant_id
        ${charJoin}
-      WHERE c.state_code = ?
-        AND p.is_synonym = 0
-        AND p.is_excluded = 0
+      WHERE sp.state_code = ?
+        ${roll.where}
         ${extraWhere}
-      GROUP BY p.id
-      ORDER BY ${sortClause.value}
+      ORDER BY ${orderBy}
       LIMIT ? OFFSET ?`;
   const rows = await env.DB.prepare(pageSql).bind(sc, ...f.binds, limit, offset).all();
 
@@ -1399,7 +1856,7 @@ async function plantsByState(env: Env, code: string, url: URL): Promise<Response
     state,
     counts: {
       taxa:     totalTaxa,
-      counties: countyCountRow?.n ?? 0,
+      counties: countyCount,
     },
     paging: {
       limit, offset,
@@ -1411,6 +1868,7 @@ async function plantsByState(env: Env, code: string, url: URL): Promise<Response
   }, {
     cache:    "medium",
     filename: `rootfast-${sc}-plants`,
+    page:     { url, total: totalTaxa, limit, offset },
   });
 }
 
@@ -1421,13 +1879,15 @@ async function countiesByState(env: Env, code: string): Promise<Response> {
   ).bind(sc).first();
   if (!state) return notFound(`No state with code "${sc}".`);
 
+  // taxa_count comes from county_taxa_summary (migration 006). Counting the
+  // distribution rows per county here used to read ~69,000 rows per call and
+  // was two thirds of the API's entire D1 usage.
   const counties = await env.DB.prepare(
     `SELECT c.county_fips, c.county_name, c.state_code,
             c.centroid_lat, c.centroid_lon,
-            (SELECT COUNT(*)
-               FROM plant_county_distribution pcd
-              WHERE pcd.county_fips = c.county_fips) AS taxa_count
+            COALESCE(s.taxa_count, 0) AS taxa_count
        FROM counties c
+       LEFT JOIN county_taxa_summary s ON s.county_fips = c.county_fips
       WHERE c.state_code = ?1
       ORDER BY c.county_name`
   ).bind(sc).all();
@@ -1608,9 +2068,16 @@ async function hardinessZone(env: Env, code: string): Promise<Response> {
 }
 
 /** ZIP → hardiness zone. Accepts ZIP and ZIP+4; trims to the first 5 digits. */
-async function hardinessByZip(env: Env, raw: string): Promise<Response> {
+/** Normalise user ZIP input: strip non-digits, keep the 5-digit ZIP from a
+ *  ZIP+4. Returns null when fewer than five digits remain. Exported for tests. */
+export function normalizeZip(raw: string): string | null {
   const digits = raw.replace(/[^0-9]/g, "").slice(0, 5);
-  if (digits.length !== 5) {
+  return digits.length === 5 ? digits : null;
+}
+
+async function hardinessByZip(env: Env, raw: string): Promise<Response> {
+  const digits = normalizeZip(raw);
+  if (!digits) {
     return badRequest(`Invalid ZIP "${raw}". Must be a 5-digit ZIP code.`);
   }
   const row = await env.DB.prepare(
@@ -1638,6 +2105,189 @@ async function hardinessByZip(env: Env, raw: string): Promise<Response> {
       description:      row.description,
     },
   }, 200, "long");
+}
+
+/* --------------------------- ZIP locality --------------------------- */
+
+type ZipCounty = {
+  county_fips: string;
+  county_name: string;
+  state_code:  string;
+  land_share:  number;
+  taxa_count:  number;
+};
+
+/** Counties a ZIP overlaps, largest land share first. Reads the Census
+ *  ZCTA crosswalk (migration 007) joined to the county taxa summary (006). */
+async function zipCounties(env: Env, zip: string): Promise<ZipCounty[]> {
+  const rows = await env.DB.prepare(
+    `SELECT zc.county_fips, c.county_name, c.state_code, zc.land_share,
+            COALESCE(s.taxa_count, 0) AS taxa_count
+       FROM zip_counties zc
+       JOIN counties c            ON c.county_fips = zc.county_fips
+       LEFT JOIN county_taxa_summary s ON s.county_fips = zc.county_fips
+      WHERE zc.zip_code = ?1
+      ORDER BY zc.land_share DESC, zc.county_fips`
+  ).bind(zip).all<ZipCounty>();
+  return rows.results ?? [];
+}
+
+type ZoneRow = {
+  zone_code: string; zone_class_code: number;
+  temp_min_f: number; temp_max_f: number; description: string;
+};
+
+async function zipZone(env: Env, zip: string): Promise<ZoneRow | null> {
+  return await env.DB.prepare(
+    `SELECT hz.zone_code, hz.zone_class_code, hz.temp_min_f, hz.temp_max_f, hz.description
+       FROM hardiness_zones_by_zip z
+       JOIN hardiness_zones hz ON hz.zone_code = z.zone_code
+      WHERE z.zip_code = ?1`
+  ).bind(zip).first<ZoneRow>();
+}
+
+const ZIP_CROSSWALK_NOTE =
+  "County mapping comes from the US Census 2020 ZCTA-to-county relationship file. " +
+  "PO-box-only ZIPs have no ZCTA and will not resolve. land_share is the fraction of the " +
+  "ZIP's land area inside each county; the first county listed is the primary one.";
+
+/**
+ * GET /v1/zip/{zip}
+ *
+ * One call to turn a ZIP into everything locality-shaped we know: the
+ * county (or counties) it covers, with taxa counts, plus the USDA hardiness
+ * zone. 404 only when neither source knows the ZIP.
+ */
+async function zipLookup(env: Env, raw: string): Promise<Response> {
+  const zip = normalizeZip(raw);
+  if (!zip) return badRequest(`Invalid ZIP "${raw}". Must be a 5-digit ZIP code.`);
+
+  const [counties, zone] = await Promise.all([zipCounties(env, zip), zipZone(env, zip)]);
+  if (counties.length === 0 && !zone) {
+    return notFound(`No county or hardiness data for ZIP "${zip}".`);
+  }
+  return json({
+    zip_code:       zip,
+    primary_county: counties[0] ?? null,
+    counties,
+    zone:           zone ?? null,
+    note:           ZIP_CROSSWALK_NOTE,
+    links: {
+      plants: `/v1/zip/${zip}/plants`,
+      native_plants: `/v1/zip/${zip}/plants?nativity=Native`,
+    },
+  }, 200, "long");
+}
+
+/** `scope` for /v1/zip/{zip}/plants: union across every overlapping county
+ *  (default) or just the primary one. Exported for tests. */
+export function parseZipScope(url: URL): "all" | "primary" | { error: string } {
+  const raw = (url.searchParams.get("scope") ?? "all").toLowerCase();
+  if (raw === "all" || raw === "primary") return raw;
+  return { error: `Unsupported scope "${raw}". Use one of: all, primary.` };
+}
+
+/**
+ * GET /v1/zip/{zip}/plants
+ *
+ * "What grows where I live?" — every taxon recorded in the county (or
+ * counties) a ZIP covers, with the same §F filters, paging, and bulk
+ * formats as the state/county listings. Rows are aggregated per taxon
+ * across the ZIP's counties, so `nativity` is the rollup used by
+ * /v1/states/{code}/plants ("Native" / "Introduced" / "Both").
+ */
+async function plantsByZip(env: Env, raw: string, url: URL): Promise<Response> {
+  const zip = normalizeZip(raw);
+  if (!zip) return badRequest(`Invalid ZIP "${raw}". Must be a 5-digit ZIP code.`);
+
+  const format = parseFormat(url);
+  if (typeof format === "object") return badRequest(format.error);
+  const scope = parseZipScope(url);
+  if (typeof scope === "object") return badRequest(scope.error);
+
+  const f = buildFilters(url.searchParams);
+  if ("error" in f) return badRequest(f.error);
+  const sortClause = parseSortState(url);
+  if ("error" in sortClause) return badRequest(sortClause.error);
+
+  const [allCounties, zone] = await Promise.all([zipCounties(env, zip), zipZone(env, zip)]);
+  if (allCounties.length === 0) {
+    return notFound(`No county mapping for ZIP "${zip}" (PO-box-only ZIPs have no Census ZCTA).`);
+  }
+  const counties = scope === "primary" ? allCounties.slice(0, 1) : allCounties;
+  const fipsList = counties.map(c => c.county_fips);
+  const fipsPlaceholders = fipsList.map(() => "?").join(",");
+
+  const isBulk = format !== "json";
+  const { limit, offset } = parsePaging(url, {
+    defaultLimit: isBulk ? BULK_MAX_ROWS : 50,
+    maxLimit:     isBulk ? BULK_MAX_ROWS : 10000,
+  });
+
+  const charJoin = f.needsChars
+    ? "LEFT JOIN plant_characteristics pc ON pc.plant_id = p.id"
+    : "";
+  const extraWhere = f.where.length ? " AND " + f.where.join(" AND ") : "";
+
+  const totalSql =
+    `SELECT COUNT(*) AS n FROM (
+       SELECT p.id
+         FROM plants p
+         JOIN plant_county_distribution pcd ON pcd.plant_id = p.id
+         ${charJoin}
+        WHERE pcd.county_fips IN (${fipsPlaceholders})
+          AND p.is_synonym = 0
+          AND p.is_excluded = 0
+          ${extraWhere}
+        GROUP BY p.id
+     )`;
+  const totalRow = await env.DB.prepare(totalSql).bind(...fipsList, ...f.binds).first<{ n: number }>();
+  const total = totalRow?.n ?? 0;
+
+  const pageSql =
+    `SELECT p.usda_symbol, p.scientific_name, p.common_name, p.family,
+            p.photo_thumb_url, p.photo_license,
+            COUNT(*)                                                     AS county_count,
+            SUM(CASE WHEN pcd.nativity = 'Native'     THEN 1 ELSE 0 END) AS native_counties,
+            SUM(CASE WHEN pcd.nativity = 'Introduced' THEN 1 ELSE 0 END) AS introduced_counties,
+            SUM(CASE WHEN pcd.nativity = 'Both'       THEN 1 ELSE 0 END) AS both_counties
+       FROM plants p
+       JOIN plant_county_distribution pcd ON pcd.plant_id = p.id
+       ${charJoin}
+      WHERE pcd.county_fips IN (${fipsPlaceholders})
+        AND p.is_synonym = 0
+        AND p.is_excluded = 0
+        ${extraWhere}
+      GROUP BY p.id
+      ORDER BY ${sortClause.value}
+      LIMIT ? OFFSET ?`;
+  const rows = await env.DB.prepare(pageSql).bind(...fipsList, ...f.binds, limit, offset).all();
+
+  const plants = (rows.results ?? []).map((r: any) => ({
+    ...r,
+    nativity: aggregateNativity(
+      Number(r.native_counties),
+      Number(r.introduced_counties),
+      Number(r.both_counties),
+    ),
+  }));
+
+  return formattedResponse(format, plants, {
+    zip_code: zip,
+    scope,
+    zone: zone ?? null,
+    counties,
+    counts: { taxa: total, counties: counties.length },
+    paging: { limit, offset, count: plants.length, has_more: offset + plants.length < total },
+    sort: url.searchParams.get("sort") ?? "sci",
+    filters: filtersEcho(url),
+    note: ZIP_CROSSWALK_NOTE,
+    plants,
+  }, {
+    cache:    "medium",
+    filename: `rootfast-zip-${zip}-plants`,
+    page:     { url, total, limit, offset },
+  });
 }
 
 /** Bulk: every county with its taxa count. Used by the biodiversity-by-county

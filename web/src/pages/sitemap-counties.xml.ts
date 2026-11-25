@@ -12,6 +12,7 @@ import {
 // counties, comfortably within one urlset and one API page (limit 5000).
 export const GET: APIRoute = async () => {
   let entries: UrlEntry[] = [];
+  let complete = true;
   try {
     const { counties } = await api.counties({ limit: 5000 });
     entries = countyCanonicalPaths(counties, slugifyCounty, stateSlugOf).map((loc) => ({
@@ -19,7 +20,8 @@ export const GET: APIRoute = async () => {
       priority: 0.5,
     }));
   } catch {
-    /* fail soft — emit an empty (but valid) urlset */
+    /* fail soft — emit an empty (but valid) urlset, uncached */
+    complete = false;
   }
-  return sitemapResponse(renderUrlset(entries));
+  return sitemapResponse(renderUrlset(entries), complete);
 };

@@ -15,6 +15,7 @@ export const GET: APIRoute = async ({ params }) => {
   const page = Number.isFinite(raw) && raw >= 0 ? raw : 0;
 
   let entries: UrlEntry[] = [];
+  let complete = true;
   try {
     const { plants } = await api.plants({
       limit: PLANTS_PER_SITEMAP,
@@ -25,7 +26,8 @@ export const GET: APIRoute = async ({ params }) => {
       priority: 0.6,
     }));
   } catch {
-    /* fail soft — emit an empty (but valid) urlset */
+    /* fail soft — emit an empty (but valid) urlset, uncached */
+    complete = false;
   }
-  return sitemapResponse(renderUrlset(entries));
+  return sitemapResponse(renderUrlset(entries), complete);
 };

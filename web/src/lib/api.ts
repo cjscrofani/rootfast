@@ -299,8 +299,75 @@ export interface SearchResponse {
 
 export interface HealthResponse {
   ok: boolean;
+  /** Date-based dataset tag, e.g. "2026.05" (matches the data-vYYYY.MM release tags). */
   dataset_version: string;
+  /** ISO date of the USDA PLANTS pull the loaded dataset was built from. */
+  dataset_date?: string | null;
   schema_version: string | null;
+  api_version?: string;
+  sources?: {
+    usda_plants_pulled: string | null;
+    usda_hardiness_edition: string | null;
+    census_zcta_vintage: string | null;
+    inaturalist_photos_pulled: string | null;
+  };
+  /** Null for any count the build has not stamped yet. */
+  counts?: {
+    taxa: number | null;
+    states: number | null;
+    counties: number | null;
+    distribution_records: number | null;
+    photos: number | null;
+    hardiness_zips: number | null;
+    hardiness_counties: number | null;
+    zip_counties: number | null;
+  };
+  /** Today's (UTC) database usage against the daily allowance. */
+  usage?: {
+    day: string;
+    rows_read: number;
+    daily_rows_budget: number | null;
+    budget_exhausted: boolean;
+    resets_in_seconds: number;
+  };
+  releases?: string;
+}
+
+/* ---------- ZIP locality ------------------------------------------- */
+
+export interface ZipCounty {
+  county_fips: string;
+  county_name: string;
+  state_code: string;
+  /** Fraction of the ZIP's land area inside this county (0–1). */
+  land_share: number;
+  taxa_count: number;
+}
+
+export interface ZipLookupResponse {
+  zip_code: string;
+  primary_county: ZipCounty | null;
+  counties: ZipCounty[];
+  zone: HardinessByZipResponse['zone'] | null;
+  note: string;
+  links: { plants: string; native_plants: string };
+}
+
+export interface PlantInZipRow extends PlantInStateRow {
+  photo_license?: string | null;
+}
+
+export interface ZipPlantsResponse {
+  zip_code: string;
+  scope: 'all' | 'primary';
+  zone: HardinessByZipResponse['zone'] | null;
+  counties: ZipCounty[];
+  counts: { taxa: number; counties: number };
+  paging: { limit: number; offset: number; count: number; has_more: boolean };
+  sort: string;
+  filters: Record<string, string> | null;
+  note: string;
+  plants: PlantInZipRow[];
 }
 
 /* ---------- Fetch helpers ------------------------------------------- */
@@ -311,12 +378,28 @@ const REQUEST_TIMEOUT_MS = 8000;
 /** Transient upstream states worth one retry (rate-limit / gateway blips). */
 const RETRY_STATUSES = new Set([429, 502, 503, 504]);
 
+/** A `fetch`-shaped handle on the API Worker (a Cloudflare service binding). */
+export interface ApiFetcher {
+  fetch(input: string, init?: RequestInit): Promise<Response>;
+}
+
+/** Set by src/middleware.ts when the `API` service binding exists (deployed
+ *  Pages). Unset at build time and in `astro dev`, where calls go to API_BASE
+ *  over HTTP as before. */
+let apiFetcher: ApiFetcher | null = null;
+
+export function setApiFetcher(fetcher: ApiFetcher | null | undefined): void {
+  if (fetcher && typeof fetcher.fetch === 'function') apiFetcher = fetcher;
+}
+
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
+  const doFetch = (input: string, i: RequestInit) =>
+    apiFetcher ? apiFetcher.fetch(input, i) : fetch(input, i);
   let lastErr: unknown;
   for (let attempt = 0; attempt <= 1; attempt++) {
     try {
-      const res = await fetch(url, {
+      const res = await doFetch(url, {
         ...init,
         signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
@@ -343,6 +426,9 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+const STATE_COUNTIES_TTL_MS = 6 * 60 * 60 * 1000;
+const stateCountiesMemo = new Map<string, { at: number; data: StateCountiesResponse }>();
 
 export const api = {
   health: () => getJson<HealthResponse>('/healthz'),
@@ -394,8 +480,19 @@ export const api = {
       `/v1/states/${encodeURIComponent(code.toUpperCase())}/plants${q ? `?${q}` : ''}`
     );
   },
-  stateCounties: (code: string) =>
-    getJson<StateCountiesResponse>(`/v1/states/${encodeURIComponent(code.toUpperCase())}/counties`),
+  /** Counties of a state. Every county page needs this list to turn its URL
+   *  slug into a FIPS code, so it is by far the most-requested call. The data
+   *  only changes with a dataset release: keep each state's answer in the
+   *  isolate for a few hours instead of asking the API on every page view. */
+  stateCounties: (code: string) => {
+    const sc = code.toUpperCase();
+    const hit = stateCountiesMemo.get(sc);
+    if (hit && Date.now() - hit.at < STATE_COUNTIES_TTL_MS) return Promise.resolve(hit.data);
+    return getJson<StateCountiesResponse>(`/v1/states/${encodeURIComponent(sc)}/counties`).then((data) => {
+      stateCountiesMemo.set(sc, { at: Date.now(), data });
+      return data;
+    });
+  },
   search: (q: string) =>
     getJson<SearchResponse>(`/v1/search?q=${encodeURIComponent(q)}`),
 
@@ -439,6 +536,20 @@ export const api = {
 
   hardinessByZip: (zip: string) =>
     getJson<HardinessByZipResponse>(`/v1/hardiness/zip/${encodeURIComponent(zip)}`),
+
+  /* ---------- ZIP locality --------------------------------------- */
+  /** /v1/zip/{zip} — counties (largest land share first) + hardiness zone. */
+  zip: (zip: string) =>
+    getJson<ZipLookupResponse>(`/v1/zip/${encodeURIComponent(zip)}`),
+  /** /v1/zip/{zip}/plants — taxa recorded in the ZIP's counties, §F filters + paging. */
+  zipPlants: (zip: string, opts?: Record<string, string | number | undefined>) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts ?? {})) {
+      if (v !== undefined && v !== '') qs.set(k, String(v));
+    }
+    const q = qs.toString();
+    return getJson<ZipPlantsResponse>(`/v1/zip/${encodeURIComponent(zip)}/plants${q ? `?${q}` : ''}`);
+  },
   hardinessByCounty: (fips: string) =>
     getJson<HardinessByCountyResponse>(`/v1/hardiness/county/${encodeURIComponent(fips)}`),
 
