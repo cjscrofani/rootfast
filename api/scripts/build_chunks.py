@@ -28,29 +28,13 @@ OUT_DIR = PROCESSED / "chunks"
 CHUNK_BYTES = 4 * 1024 * 1024  # 4 MB target chunk size
 
 # FK-safe order. DELETEs run in reverse.
-TABLE_ORDER = [
-    "regions",
-    "states",
-    "counties",
-    "plants",
-    "plant_growth_habits",
-    "plant_durations",
-    "plant_common_names",
-    "plant_native_status",
-    "plant_county_distribution",
-    "plant_characteristics",
-    "plant_wildlife_value",
-    "plant_wetland_indicators",
-    "plant_synonyms",
-    "plant_status",
-    "plant_external_references",
-    "hardiness_zones",
-    "hardiness_zones_by_zip",
-    "hardiness_zones_by_county",
-    "soil_by_county",
-    "plant_endemic_state",
-    "county_taxa_summary",
-]
+# One list for every script that walks the tables in FK order: build.py owns
+# it. A second copy here went stale when migrations 007/008 added tables, and
+# the wipe step then failed on foreign keys (counties/states still referenced
+# by zip_counties and the summary tables).
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build import TABLE_ORDER  # noqa: E402
 
 # Tables small enough to bundle into one seed chunk.
 SMALL = {"regions", "states", "counties"}

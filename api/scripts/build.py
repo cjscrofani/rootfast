@@ -38,7 +38,16 @@ SOURCES: list[tuple[str, Path]] = [
     ("usda_plants",    REPO_ROOT / "sources" / "usda-plants"    / "etl" / "processed" / "usda_plants.db"),
     ("usda_hardiness", REPO_ROOT / "sources" / "usda-hardiness" / "etl" / "processed" / "hardiness.db"),
     ("usda_soil",      REPO_ROOT / "sources" / "usda-soil"      / "etl" / "processed" / "soil.db"),
+    ("census_zcta",    REPO_ROOT / "sources" / "census-zcta"    / "etl" / "processed" / "zcta.db"),
 ]
+
+# County FIPS codes that changed after USDA PLANTS froze its county list.
+# The Census 2020 crosswalk uses the new codes; USDA (and so `counties`) still
+# carries the old ones. Remapped at merge time so those ZIPs keep resolving.
+COUNTY_FIPS_REMAP: dict[str, str] = {
+    "46102": "46113",   # Oglala Lakota County, SD  (renamed from Shannon, 2015)
+    "02158": "02270",   # Kusilvak Census Area, AK  (renamed from Wade Hampton, 2015)
+}
 
 # Tables in FK dependency order (parents before children).
 # Used both to copy in the right order and to print per-table counts.
@@ -62,9 +71,16 @@ TABLE_ORDER = [
     "hardiness_zones_by_zip",
     "hardiness_zones_by_county",
     "soil_by_county",
+    "zip_counties",
     # Derived summary tables — populated after merge (see populate_summaries).
     "plant_endemic_state",
     "county_taxa_summary",
+    # Migration 008 — read-cost summaries (also filled by populate_summaries).
+    "plant_name_rank",
+    "county_plants",
+    "state_plants",
+    "state_taxa_summary",
+    "plant_range_summary",
 ]
 
 
@@ -117,8 +133,52 @@ def merge_source(db: sqlite3.Connection, name: str, src_path: Path) -> dict[str,
     return counts
 
 
+def reconcile_zip_counties(db: sqlite3.Connection) -> None:
+    """Apply COUNTY_FIPS_REMAP, then drop crosswalk rows whose county the
+    unified `counties` table doesn't know (Connecticut's pre-2022 counties,
+    a few Alaska boroughs USDA never listed). Shares are re-summed when a
+    remap folds two source counties into one."""
+    before = db.execute("SELECT COUNT(*) FROM zip_counties").fetchone()[0]
+    if before == 0:
+        return
+    db.execute("BEGIN")
+    for new_fips, old_fips in COUNTY_FIPS_REMAP.items():
+        db.execute(
+            """INSERT INTO zip_counties (zip_code, county_fips, land_share)
+               SELECT zip_code, ?, MIN(1.0, SUM(land_share)) FROM zip_counties
+                WHERE county_fips = ? GROUP BY zip_code
+               ON CONFLICT(zip_code, county_fips) DO UPDATE
+                  SET land_share = MIN(1.0, zip_counties.land_share + excluded.land_share)""",
+            (old_fips, new_fips),
+        )
+        db.execute("DELETE FROM zip_counties WHERE county_fips = ?", (new_fips,))
+    db.execute(
+        "DELETE FROM zip_counties WHERE county_fips NOT IN (SELECT county_fips FROM counties)"
+    )
+    db.execute("COMMIT")
+    after = db.execute("SELECT COUNT(*) FROM zip_counties").fetchone()[0]
+    print(f"  ✓ zip_counties reconciled: {after} rows kept, {before - after} dropped (unknown counties)")
+
+
+def populate_meta(db: sqlite3.Connection, dataset_version: str | None) -> None:
+    """Stamp dataset provenance + headline counts into schema_meta for /healthz."""
+    sql = (API_ROOT / "scripts" / "populate_meta.sql").read_text(encoding="utf-8")
+    db.executescript(sql)
+    if dataset_version is None:
+        date = db.execute("SELECT value FROM schema_meta WHERE key = 'dataset_date'").fetchone()
+        dataset_version = date[0][:7].replace("-", ".") if date and date[0] else "unknown"
+    db.execute(
+        """INSERT INTO schema_meta (key, value, updated_at)
+           VALUES ('dataset_version', ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+        (dataset_version,),
+    )
+    rows = db.execute("SELECT key, value FROM schema_meta WHERE key LIKE 'count_%' OR key LIKE 'dataset_%'").fetchall()
+    print("  ✓ dataset meta: " + ", ".join(f"{k}={v}" for k, v in rows))
+
+
 def populate_summaries(db: sqlite3.Connection) -> None:
-    """Fill the derived summary tables (schema/006) from the merged base data."""
+    """Fill the derived summary tables (schema/006 + 008) from the merged base data."""
     sql = (API_ROOT / "scripts" / "populate_summaries.sql").read_text(encoding="utf-8")
     db.executescript(sql)
     endemic = db.execute("SELECT COUNT(*) FROM plant_endemic_state").fetchone()[0]
@@ -269,6 +329,11 @@ def validate(db: sqlite3.Connection) -> None:
 
 
 def main() -> None:
+    # Optional `--tag data-v2026.07` (or bare `2026.07`) stamps dataset_version;
+    # otherwise it is derived from the USDA pull date (YYYY.MM).
+    dataset_version: str | None = None
+    if "--tag" in sys.argv:
+        dataset_version = sys.argv[sys.argv.index("--tag") + 1].removeprefix("data-v")
     print(f"Building {OUT_DB}")
     migrations = sorted(p.name for p in SCHEMA_DIR.glob("*.sql"))
     print(f"  Schema:  {len(migrations)} migrations from {SCHEMA_DIR.relative_to(REPO_ROOT)}/ — {', '.join(migrations)}")
@@ -278,8 +343,10 @@ def main() -> None:
     for name, path in SOURCES:
         merge_source(db, name, path)
 
+    reconcile_zip_counties(db)
     reenable_fks_and_verify(db)
     populate_summaries(db)
+    populate_meta(db, dataset_version)
     validate(db)
 
     size_mb = OUT_DB.stat().st_size / (1024 * 1024)

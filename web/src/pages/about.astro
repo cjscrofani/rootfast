@@ -2,11 +2,15 @@
 export const prerender = true;
 
 import BaseLayout from '@/layouts/BaseLayout.astro';
+import { datasetStats, fmt, pct } from '@/lib/stats';
+
+// Same /healthz-derived numbers the homepage prints — never hand-edit these.
+const stats = await datasetStats();
 ---
 
 <BaseLayout
   title="About — rootfast"
-  description="What rootfast is, why it exists, who built it, and what's coming."
+  description="What the Rootfast native plant API is, how county-level nativity is derived, who maintains it, how often it refreshes, and what happens if it outgrows its hosting."
 >
   <article class="max-w-content mx-auto px-6 lg:px-10">
     <header class="pt-12 pb-8">
@@ -43,24 +47,71 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
 
         <h2 class="mt-10 font-serif text-2xl text-ink">What it covers, today</h2>
         <p class="mt-3 text-ink-2 leading-relaxed">
-          <strong>The United States, nationwide.</strong> 27,678 plant taxa across
-          55 of 56 states and territories, 3,230 counties, 2.5 million county-presence
-          records with native/introduced status. USDA cultivation specs where USDA
-          has formally characterised the species. iNaturalist photos for 94% of taxa
-          (CC-licensed, hot-linked from iNat, never rehosted). Every record carries a
-          GBIF taxon key so additional sources join cleanly.
+          <strong>The United States, nationwide.</strong> {fmt(stats.taxa)} plant taxa across
+          {stats.states} of {stats.statesTotal} states and territories, {fmt(stats.counties)} counties,
+          {fmt(stats.distributionRecords)} county-presence records with native/introduced status.
+          USDA cultivation specs where USDA has formally characterised the species.
+          iNaturalist photos for {pct(stats.photos, stats.taxa)} of taxa (CC-licensed, hot-linked
+          from iNat, never rehosted). Every record carries a GBIF taxon key so additional
+          sources join cleanly.
         </p>
         <p class="mt-4 text-ink-2 leading-relaxed">
-          <strong>USDA Plant Hardiness Zone Map (2023).</strong> 40,502 US ZIP codes and
-          3,199 counties mapped to their canonical hardiness zone (1a–13b), joinable
+          <strong>USDA Plant Hardiness Zone Map (2023).</strong> {fmt(stats.hardinessZips)} US ZIP codes and
+          {fmt(stats.hardinessCounties)} counties mapped to their canonical hardiness zone (1a–13b), joinable
           against each plant&apos;s minimum-temperature tolerance.
         </p>
+        <p class="mt-4 text-ink-2 leading-relaxed">
+          <strong>ZIP codes.</strong> {fmt(stats.zipCounties)} ZIPs resolve to the county or counties
+          they cover (US Census 2020 ZCTA crosswalk), so a single ZIP returns its counties,
+          its hardiness zone, and the plants recorded there.
+        </p>
+        <p class="mt-4 text-ink-2 leading-relaxed">
+          <strong>How county nativity is derived.</strong> It isn&apos;t derived — it&apos;s
+          USDA&apos;s own. USDA PLANTS publishes two different things: a coarse regional
+          native status per plant (L48, Alaska, Hawaii, Canada, …) and, separately, a
+          county distribution layer where every plant × county record carries its own
+          <em>Native</em> or <em>Introduced</em> flag. Rootfast stores the county layer as-is.
+          When USDA lists the same county under both flags we record <em>Both</em>; state
+          and ZIP listings roll the county values up to one value per taxon. The regional
+          status is kept on the plant record for reference but never used to infer a county.
         <p class="mt-4 text-ink-2 leading-relaxed">
           <strong>Known gaps.</strong> Connecticut is mid-migration on the USDA side
           following its 2022 abolition of counties — USDA has the new planning regions
           in their gazetteer but no plant records linked yet. A handful of water-heavy
           coastal counties also fall outside their hardiness-zone polygon (centroid
-          lands in water). We&apos;re working in the open; the rough edges are real.
+          lands in water). PO-box-only ZIPs have no Census ZCTA and so no county.
+          We&apos;re working in the open; the rough edges are real.
+        </p>
+
+        <h2 class="mt-10 font-serif text-2xl text-ink">Refresh cadence and versions</h2>
+        <p class="mt-3 text-ink-2 leading-relaxed">
+          The loaded dataset is <strong class="mono">{stats.datasetVersion}</strong>, built from a USDA
+          PLANTS pull on <span class="mono">{stats.usdaPulled}</span>. Dataset versions are
+          date-based (<span class="mono">YYYY.MM</span>) and every refresh ships as a tagged
+          <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/releases" target="_blank" rel="noreferrer">GitHub Release ↗</a>
+          with the full SQLite database and a Parquet set, so the data outlives the service.
+          We re-pull USDA PLANTS and iNaturalist photos at least twice a year, and sooner when
+          USDA publishes a notable change (Connecticut's county records, for instance).
+          The live version and pull date are always in
+          <a class="link-hover text-ink mono" href="https://api.rootfast.org/healthz">/healthz</a>.
+        </p>
+
+        <h2 class="mt-10 font-serif text-2xl text-ink">Stability, deprecation, and what if it grows</h2>
+        <p class="mt-3 text-ink-2 leading-relaxed">
+          <strong>/v1 is stable.</strong> Fields are only added, never renamed or removed.
+          A breaking change ships as <span class="mono">/v2</span>, and <span class="mono">/v1</span>
+          stays up for at least twelve months afterwards. Deprecations are announced in the
+          <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/blob/main/CHANGELOG.md" target="_blank" rel="noreferrer">CHANGELOG ↗</a>
+          and signalled with a <span class="mono">Deprecation</span> response header.
+        </p>
+        <p class="mt-4 text-ink-2 leading-relaxed">
+          <strong>Hosting.</strong> The whole thing is built to fit Cloudflare's free tier,
+          so it runs on a fixed daily database allowance; when that is spent, cached pages
+          keep working and the rest waits for midnight UTC.
+          If traffic outgrows it, the first lever is caching (responses are
+          cached for a day) and the second is tighter anonymous rate limits with free
+          keys for heavy users — never a paywall on the data, which is CC0 and downloadable.
+          If the service ever has to go dark, the last release stays on GitHub.
         </p>
 
         <h2 class="mt-10 font-serif text-2xl text-ink">How it's built</h2>
@@ -77,7 +128,7 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
           reading is Astro on Cloudflare Pages.
         </p>
         <p class="mt-4 text-ink-2 leading-relaxed">
-          Code is MIT-licensed, data is CC0. The whole thing runs comfortably inside
+          Code is MIT-licensed, data is CC0. The whole thing is built to fit
           Cloudflare's free tier. Source — including ETL pipelines, schema migrations,
           and the discovery notes that explain how to find these undocumented USDA
           endpoints in the first place — is on GitHub:
@@ -90,14 +141,16 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
         <div>
           <p class="label">Status, in numbers</p>
           <dl class="mt-4 field-grid">
-            <dt>Plant taxa</dt><dd class="mono">27,678</dd>
-            <dt>States &amp; territories</dt><dd class="mono">55 / 56</dd>
-            <dt>Counties</dt><dd class="mono">3,230</dd>
-            <dt>Distribution records</dt><dd class="mono">2,501,631</dd>
+            <dt>Plant taxa</dt><dd class="mono">{fmt(stats.taxa)}</dd>
+            <dt>States &amp; territories</dt><dd class="mono">{stats.states} / {stats.statesTotal}</dd>
+            <dt>Counties</dt><dd class="mono">{fmt(stats.counties)}</dd>
+            <dt>Distribution records</dt><dd class="mono">{fmt(stats.distributionRecords)}</dd>
             <dt>GBIF coverage</dt><dd class="mono text-native">100 %</dd>
-            <dt>Photos (iNat)</dt><dd class="mono">26,125 · 94 %</dd>
-            <dt>Hardiness ZIPs</dt><dd class="mono">40,502</dd>
-            <dt>Updated</dt><dd class="mono">2026-05-26</dd>
+            <dt>Photos (iNat)</dt><dd class="mono">{fmt(stats.photos)} · {pct(stats.photos, stats.taxa)}</dd>
+            <dt>Hardiness ZIPs</dt><dd class="mono">{fmt(stats.hardinessZips)}</dd>
+            <dt>ZIPs → counties</dt><dd class="mono">{fmt(stats.zipCounties)}</dd>
+            <dt>Dataset</dt><dd class="mono">{stats.datasetVersion}</dd>
+            <dt>USDA pull</dt><dd class="mono">{stats.usdaPulled}</dd>
           </dl>
         </div>
 
@@ -121,6 +174,19 @@ import BaseLayout from '@/layouts/BaseLayout.astro';
               <p class="mt-1">Species photos, hot-linked under each photo&apos;s individual CC license.</p>
             </li>
           </ul>
+        </div>
+
+        <div>
+          <p class="label">Who runs it</p>
+          <p class="mt-3 text-sm text-ink-2 leading-relaxed">
+            Rootfast is built and maintained by
+            <a class="link-hover text-ink" href="https://github.com/cjscrofani" target="_blank" rel="noreferrer">CJ Scrofani</a>,
+            a developer in Montana, as a public-interest side project. There is no company
+            behind it and no plan to charge for the data. The fastest way to reach the
+            maintainer is a
+            <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/issues" target="_blank" rel="noreferrer">GitHub issue ↗</a>;
+            the <a class="link-hover text-ink" href="/contact">contact form</a> works too.
+          </p>
         </div>
 
         <div>

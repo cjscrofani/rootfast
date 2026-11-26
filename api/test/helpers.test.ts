@@ -96,10 +96,10 @@ describe('buildFilters', () => {
     expect('error' in bad && bad.error).toMatch(/fire_resistant/);
   });
 
-  it('min/max counties build a HAVING subquery and reject negatives', () => {
+  it('min/max counties filter on the precomputed range summary and reject negatives', () => {
     const f = filters('min_counties=5&max_counties=50');
     if ('error' in f) throw new Error(f.error);
-    expect(f.where[0]).toContain('COUNT(DISTINCT county_fips)');
+    expect(f.where[0]).toContain('county_count >= ? AND county_count <= ?');
     expect(f.binds).toEqual([5, 50]);
 
     const bad = filters('min_counties=-1');
@@ -244,5 +244,83 @@ describe('computeEtag', () => {
   });
   it('differs for different bodies', async () => {
     expect(await computeEtag('a')).not.toBe(await computeEtag('b'));
+  });
+});
+
+/* --------------------------- ZIP locality --------------------------- */
+
+import { normalizeZip, parseZipScope, buildHealthMeta, metaInt, PHOTO_LICENSES, COMMERCIAL_PHOTO_LICENSES } from '../src/index';
+
+describe('normalizeZip', () => {
+  it('accepts a plain 5-digit ZIP', () => {
+    expect(normalizeZip('59715')).toBe('59715');
+  });
+  it('keeps the 5-digit prefix of a ZIP+4 in either form', () => {
+    expect(normalizeZip('59715-1234')).toBe('59715');
+    expect(normalizeZip('597151234')).toBe('59715');
+  });
+  it('strips stray characters and whitespace', () => {
+    expect(normalizeZip(' 10001 ')).toBe('10001');
+  });
+  it('rejects anything with fewer than five digits', () => {
+    expect(normalizeZip('5971')).toBeNull();
+    expect(normalizeZip('abc')).toBeNull();
+    expect(normalizeZip('')).toBeNull();
+  });
+});
+
+describe('parseZipScope', () => {
+  const url = (qs: string) => new URL(`https://api.test/v1/zip/59715/plants${qs}`);
+  it('defaults to all', () => {
+    expect(parseZipScope(url(''))).toBe('all');
+  });
+  it('accepts primary, case-insensitively', () => {
+    expect(parseZipScope(url('?scope=Primary'))).toBe('primary');
+  });
+  it('rejects unknown scopes', () => {
+    expect(parseZipScope(url('?scope=nearest'))).toHaveProperty('error');
+  });
+});
+
+describe('photo filters', () => {
+  it('photo_license lower-cases and ORs the listed codes', () => {
+    const sp = new URLSearchParams(); sp.set('photo_license', 'CC0,cc-by');
+    const f = buildFilters(sp);
+    if ('error' in f) throw new Error(f.error);
+    expect(f.where).toContain('p.photo_license IN (?,?)');
+    expect(f.binds).toEqual(['cc0', 'cc-by']);
+    expect(f.needsChars).toBe(false);
+  });
+  it('photo_license rejects unknown codes', () => {
+    expect(filters('photo_license=cc-by-nc,allrights')).toHaveProperty('error');
+  });
+  it('has_photo maps to a NULL check in both directions', () => {
+    const yes = filters('has_photo=1');
+    if ('error' in yes) throw new Error(yes.error);
+    expect(yes.where).toEqual(['p.photo_url IS NOT NULL']);
+    const no = filters('has_photo=false');
+    if ('error' in no) throw new Error(no.error);
+    expect(no.where).toEqual(['p.photo_url IS NULL']);
+    expect(filters('has_photo=maybe')).toHaveProperty('error');
+  });
+  it('the commercial-safe set is a subset of all license codes', () => {
+    for (const code of COMMERCIAL_PHOTO_LICENSES) expect(PHOTO_LICENSES).toContain(code);
+    for (const nc of ['cc-by-nc', 'cc-by-nc-sa', 'cc-by-nc-nd']) {
+      expect(COMMERCIAL_PHOTO_LICENSES as readonly string[]).not.toContain(nc);
+    }
+  });
+});
+
+describe('health meta', () => {
+  it('collapses schema_meta rows into a map and parses integer counts', () => {
+    const meta = buildHealthMeta([
+      { key: 'schema_version', value: '007' },
+      { key: 'count_taxa', value: '27678' },
+      { key: 'count_photos', value: 'n/a' },
+    ]);
+    expect(meta.get('schema_version')).toBe('007');
+    expect(metaInt(meta, 'count_taxa')).toBe(27678);
+    expect(metaInt(meta, 'count_photos')).toBeNull();
+    expect(metaInt(meta, 'count_missing')).toBeNull();
   });
 });

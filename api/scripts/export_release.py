@@ -35,6 +35,12 @@ _SKIP = {
     "plants_fts_data",
     "plants_fts_docsize",
     "plants_fts_idx",
+    # Operational tables (migration 008): not dataset. See _OPERATIONAL.
+    "usage_daily",
+    "response_cache",
+    # D1 / wrangler bookkeeping that `wrangler d1 export` carries along.
+    "d1_migrations",
+    "_cf_KV",
 }
 
 
@@ -44,6 +50,11 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+# The API's usage ledger and response store. Left out of the Parquet export
+# (via _SKIP) and dropped from the SQLite artifact before it is gzipped.
+_OPERATIONAL = ("usage_daily", "response_cache")
 
 
 def _data_tables(db: sqlite3.Connection) -> list[str]:
@@ -84,10 +95,20 @@ def export(db_path: Path, out_dir: Path, tag: str) -> dict:
         print(f"  parquet {tbl}: {len(df):,} rows")
     db.close()
 
-    # Gzip the whole SQLite file.
+    # Gzip the SQLite file — a COPY with the operational tables removed, so
+    # the API's usage ledger and stored responses are never published.
+    clean_path = out_dir / "rootfast.sqlite"
+    shutil.copyfile(db_path, clean_path)
+    clean = sqlite3.connect(clean_path)
+    for tbl in _OPERATIONAL:
+        clean.execute(f"DROP TABLE IF EXISTS {tbl}")
+    clean.commit()
+    clean.execute("VACUUM")
+    clean.close()
     sqlite_gz = out_dir / "rootfast.sqlite.gz"
-    with db_path.open("rb") as src, gzip.open(sqlite_gz, "wb", compresslevel=9) as dst:
+    with clean_path.open("rb") as src, gzip.open(sqlite_gz, "wb", compresslevel=9) as dst:
         shutil.copyfileobj(src, dst)
+    clean_path.unlink()
     print(f"  gzipped sqlite: {sqlite_gz.stat().st_size / 1e6:.1f} MB")
 
     # Zip the Parquet directory.

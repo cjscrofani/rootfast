@@ -1,7 +1,36 @@
+# rootfast.org — crawl policy.
+#
+# Every page here is rendered on demand from a database with a small daily
+# allowance, so crawl volume is a real cost. Search engines are welcome on the
+# canonical pages listed in the sitemap; the rules below keep crawlers off the
+# endless filter / sort / pagination variants and turn away bulk harvesters.
+# The full dataset is one download: https://github.com/cjscrofani/rootfast/releases
+
 User-agent: *
 Allow: /
-
 # Internal/utility routes — content is fine to crawl but adds no SEO value.
 Disallow: /search
+# Filtered, sorted and paginated views of pages that are already in the
+# sitemap (each declares the unparameterised page as its canonical URL).
+Disallow: /*?
+Crawl-delay: 10
+
+# SEO-tool and bulk-harvest crawlers: no search traffic comes from these.
+User-agent: SemrushBot
+User-agent: SemrushBot-SA
+User-agent: AhrefsBot
+User-agent: MJ12bot
+User-agent: DotBot
+User-agent: DataForSeoBot
+User-agent: BLEXBot
+User-agent: PetalBot
+User-agent: Bytespider
+User-agent: Reflectionbot
+User-agent: Amazonbot
+User-agent: meta-externalagent
+User-agent: GPTBot
+User-agent: CCBot
+User-agent: TLM-Audit-Scanner
+Disallow: /
 
 Sitemap: https://rootfast.org/sitemap.xml

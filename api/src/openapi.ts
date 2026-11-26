@@ -5,7 +5,8 @@
  * verbatim at /v1/openapi.json, and rendered at /v1/docs via Scalar.
  *
  * Editing rules:
- *   - Bump info.version on breaking changes.
+ *   - Bump info.version (minor) on every additive change; a breaking change
+ *     is a new /v2, not a bump here.
  *   - When adding a path, also list any new query params in the relevant
  *     parameters block.
  *   - Schemas are intentionally summary-level (the surface is large; we
@@ -16,18 +17,37 @@ export const OPENAPI_SPEC = {
   openapi: "3.0.3",
   info: {
     title: "Rootfast API",
-    version: "1.0.0",
-    summary: "Native plants, counties, hardiness zones — joined and queryable.",
+    version: "1.2.0",
+    summary: "Native plant API for the United States — county-level USDA nativity, hardiness zones, ZIP lookups.",
     description:
       "A small, JSON-only HTTP API over USDA PLANTS, USDA Plant Hardiness Zone Map (2023), " +
-      "iNaturalist photos, and the GBIF Backbone Taxonomy. No keys, CC0 data, MIT code. " +
+      "the US Census ZCTA crosswalk, iNaturalist photos, and the GBIF Backbone Taxonomy. " +
+      "No keys, CC0 data, MIT code. " +
       "Bulk listings additionally support `format=csv` and `format=ndjson` for streaming exports.\n\n" +
+      "**Nativity is county-level and comes straight from USDA.** Each `nativity` value on a " +
+      "plant × county row (`Native` / `Introduced` / `Both`) is USDA PLANTS's own per-county " +
+      "record from its distribution layer — it is not derived from the coarser regional " +
+      "`native_status` (L48, AK, HI, …) that appears on the plant detail. `Both` means USDA lists " +
+      "the county under both statuses. State and ZIP listings roll county rows up to one value " +
+      "per taxon.\n\n" +
       "**Rate limits (per client IP, 60-second windows):** " +
-      "120 default · 5 for `?format=csv|ndjson` exports · 60 for search " +
+      "60 default · 30 for `/v1/search` · 2 for `?format=csv|ndjson` exports · 2 for the plant finder " +
       "(`/v1/search` and `POST /v1/plants/search`). " +
       "On rejection: HTTP 429 with `Retry-After: 60` and a `rate_limited` error body. " +
-      "`/healthz`, `/v1/openapi.json`, `/v1/docs` are not rate-limited.",
-    contact: { name: "Rootfast", url: "https://rootfast.org" },
+      "`/healthz`, `/v1/openapi.json`, `/v1/docs` are not rate-limited, and answers served from " +
+      "Cloudflare's edge cache do not count. Limits, page-size caps and the daily allowance are " +
+      "operational settings, not part of the `/v1` contract.\n\n" +
+      "**Daily allowance.** The service runs on a fixed daily database allowance. If it is spent, " +
+      "cached answers are still served and everything else returns HTTP 503 (`BudgetExhausted`) with a " +
+      "`daily_budget_exhausted` error body and a `Retry-After` header counting down to 00:00 UTC. " +
+      "`/healthz` reports the day's usage under `usage`. For the whole dataset, download a release " +
+      "instead of paging the API.\n\n" +
+      "**Stability.** `/v1` is stable: fields are only added, never renamed or removed, and any " +
+      "breaking change ships as `/v2` with `/v1` kept alive for at least 12 months. Deprecations " +
+      "are announced in the project CHANGELOG and via a `Deprecation` response header. " +
+      "Dataset snapshots (SQLite + Parquet) are published as GitHub Releases so the data outlives " +
+      "the service.",
+    contact: { name: "CJ Scrofani (maintainer)", url: "https://github.com/cjscrofani/rootfast/issues" },
     license: { name: "CC0 1.0 Universal", url: "https://creativecommons.org/publicdomain/zero/1.0/" },
   },
   servers: [
@@ -40,6 +60,7 @@ export const OPENAPI_SPEC = {
     { name: "counties",  description: "County listings and per-county plant lists." },
     { name: "states",    description: "State listings, state×plants, state×counties." },
     { name: "hardiness", description: "USDA Plant Hardiness Zone lookups." },
+    { name: "zip",       description: "ZIP-code locality: counties, zone, and the plants recorded there." },
     { name: "search",    description: "Free-text taxon search." },
   ],
 
@@ -48,8 +69,11 @@ export const OPENAPI_SPEC = {
       get: {
         tags: ["meta"],
         operationId: "healthz",
-        summary: "Service health.",
-        description: "Returns `{ok, dataset_version, schema_version}`. Cheap; no DB read.",
+        summary: "Service health, dataset version, and provenance.",
+        description:
+          "Liveness plus provenance: dataset version and date, schema version, source pull dates, " +
+          "and headline row counts. All of it is read from the `schema_meta` table (one cheap query), " +
+          "so counts reflect the data actually loaded, not a hard-coded number.",
         responses: {
           "200": {
             description: "OK",
@@ -67,7 +91,8 @@ export const OPENAPI_SPEC = {
         description:
           "Paginated taxa list with the full §F filter set (family, growth habit, drought, shade, " +
           "min/max temperature, county-count rarity, etc.). Set `format=csv` or `format=ndjson` for " +
-          "bulk export (limit can rise to 50,000 in those modes).",
+          "bulk export (up to 10,000 rows per call in those modes; `X-Total-Count` gives the full count " +
+          "and a `Link: <…>; rel=\"next\"` header the next page).",
         parameters: [
           { $ref: "#/components/parameters/limit" },
           { $ref: "#/components/parameters/offset" },
@@ -78,6 +103,8 @@ export const OPENAPI_SPEC = {
           { $ref: "#/components/parameters/growthHabitFilter" },
           { $ref: "#/components/parameters/durationFilter" },
           { $ref: "#/components/parameters/nativityFilter" },
+          { $ref: "#/components/parameters/photoLicenseFilter" },
+          { $ref: "#/components/parameters/hasPhotoFilter" },
           { $ref: "#/components/parameters/droughtTolerance" },
           { $ref: "#/components/parameters/shadeTolerance" },
           { $ref: "#/components/parameters/moistureUse" },
@@ -104,6 +131,7 @@ export const OPENAPI_SPEC = {
           },
           "400": { $ref: "#/components/responses/BadRequest" },
           "429": { $ref: "#/components/responses/RateLimited" },
+          "503": { $ref: "#/components/responses/BudgetExhausted" },
         },
       },
     },
@@ -199,6 +227,7 @@ export const OPENAPI_SPEC = {
           },
           "400": { $ref: "#/components/responses/BadRequest" },
           "429": { $ref: "#/components/responses/RateLimited" },
+          "503": { $ref: "#/components/responses/BudgetExhausted" },
         },
       },
     },
@@ -278,6 +307,8 @@ export const OPENAPI_SPEC = {
           { $ref: "#/components/parameters/nativityFilter" },
           { $ref: "#/components/parameters/growthHabitFilter" },
           { $ref: "#/components/parameters/familyFilter" },
+          { $ref: "#/components/parameters/photoLicenseFilter" },
+          { $ref: "#/components/parameters/hasPhotoFilter" },
         ],
         responses: {
           "200": {
@@ -290,6 +321,7 @@ export const OPENAPI_SPEC = {
           },
           "404": { $ref: "#/components/responses/NotFound" },
           "429": { $ref: "#/components/responses/RateLimited" },
+          "503": { $ref: "#/components/responses/BudgetExhausted" },
         },
       },
     },
@@ -394,6 +426,7 @@ export const OPENAPI_SPEC = {
           },
           "404": { $ref: "#/components/responses/NotFound" },
           "429": { $ref: "#/components/responses/RateLimited" },
+          "503": { $ref: "#/components/responses/BudgetExhausted" },
         },
       },
     },
@@ -445,6 +478,7 @@ export const OPENAPI_SPEC = {
             content: { "application/json": { schema: { $ref: "#/components/schemas/SearchResponse" } } },
           },
           "429": { $ref: "#/components/responses/RateLimited" },
+          "503": { $ref: "#/components/responses/BudgetExhausted" },
         },
       },
     },
@@ -540,6 +574,76 @@ export const OPENAPI_SPEC = {
           },
           "400": { $ref: "#/components/responses/BadRequest" },
           "404": { $ref: "#/components/responses/NotFound" },
+        },
+      },
+    },
+
+    "/v1/zip/{zip}": {
+      get: {
+        tags: ["zip"],
+        operationId: "zipLookup",
+        summary: "Counties and hardiness zone for a US ZIP.",
+        description:
+          "Resolves a 5-digit ZIP (or ZIP+4) to the county or counties it covers — ordered by " +
+          "land share, with per-county taxa counts — plus its USDA hardiness zone. County mapping " +
+          "is the US Census 2020 ZCTA-to-county relationship file; PO-box-only ZIPs have no ZCTA " +
+          "and return `counties: []` (or 404 when the hardiness table doesn't know them either).",
+        parameters: [
+          { name: "zip", in: "path", required: true, schema: { type: "string", example: "59715" } },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/ZipLookupResponse" } } },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+          "404": { $ref: "#/components/responses/NotFound" },
+        },
+      },
+    },
+
+    "/v1/zip/{zip}/plants": {
+      get: {
+        tags: ["zip"],
+        operationId: "plantsByZip",
+        summary: "Plants recorded in the counties a ZIP covers.",
+        description:
+          "The \"what grows where I live?\" endpoint. Aggregates plant × county records across every " +
+          "county the ZIP overlaps (`scope=all`, default) or just the primary county (`scope=primary`). " +
+          "Accepts the full §F filter set, so `?nativity=Native&growth_habit=Tree&drought_tolerance=High` " +
+          "works here exactly as on the county listing. `nativity` per row is the rollup used by the " +
+          "state listing. Bulk-export modes (csv, ndjson) supported. Pair `zone.temp_min_f` with " +
+          "`max_temperature_f` to keep only taxa that survive the ZIP's winter.",
+        parameters: [
+          { name: "zip",   in: "path",  required: true, schema: { type: "string", example: "59715" } },
+          { name: "scope", in: "query", schema: { type: "string", enum: ["all", "primary"], default: "all" } },
+          { name: "sort",  in: "query", schema: { type: "string", enum: ["sci", "common", "counties"], default: "sci" } },
+          { $ref: "#/components/parameters/limit" },
+          { $ref: "#/components/parameters/offset" },
+          { $ref: "#/components/parameters/format" },
+          { $ref: "#/components/parameters/nativityFilter" },
+          { $ref: "#/components/parameters/growthHabitFilter" },
+          { $ref: "#/components/parameters/durationFilter" },
+          { $ref: "#/components/parameters/familyFilter" },
+          { $ref: "#/components/parameters/droughtTolerance" },
+          { $ref: "#/components/parameters/shadeTolerance" },
+          { $ref: "#/components/parameters/maxTemperatureF" },
+          { $ref: "#/components/parameters/photoLicenseFilter" },
+          { $ref: "#/components/parameters/hasPhotoFilter" },
+        ],
+        responses: {
+          "200": {
+            description: "OK",
+            content: {
+              "application/json":     { schema: { $ref: "#/components/schemas/ZipPlantsResponse" } },
+              "text/csv":             { schema: { type: "string" } },
+              "application/x-ndjson": { schema: { type: "string" } },
+            },
+          },
+          "400": { $ref: "#/components/responses/BadRequest" },
+          "404": { $ref: "#/components/responses/NotFound" },
+          "429": { $ref: "#/components/responses/RateLimited" },
+          "503": { $ref: "#/components/responses/BudgetExhausted" },
         },
       },
     },
@@ -650,11 +754,25 @@ export const OPENAPI_SPEC = {
   },
 
   components: {
+    headers: {
+      "X-Rootfast-Cache": {
+        description: "Where a `/v1` answer came from: `edge` (Cloudflare location cache), `store` (global response store) or `miss` (computed for this request).",
+        schema: { type: "string", enum: ["edge", "store", "miss"] },
+      },
+      "X-Total-Count": {
+        description: "On csv/ndjson exports: rows matching the request across all pages.",
+        schema: { type: "integer" },
+      },
+      "Link": {
+        description: "On csv/ndjson exports: `<url>; rel=\"next\"` while rows remain past this page.",
+        schema: { type: "string" },
+      },
+    },
     parameters: {
       limit: {
         name: "limit", in: "query",
-        description: "Page size. Default 50 (JSON), 50,000 (csv/ndjson). Max 10,000 (JSON), 50,000 (bulk).",
-        schema: { type: "integer", minimum: 1, maximum: 50000 },
+        description: "Page size. JSON defaults and maxima vary by listing (plants 5,000 / 10,000; state and ZIP plants 50 / 10,000; county plants 50 / 1,000; counties 500 / 5,000). csv/ndjson: default and max 10,000.",
+        schema: { type: "integer", minimum: 1, maximum: 10000 },
       },
       offset: {
         name: "offset", in: "query",
@@ -686,7 +804,9 @@ export const OPENAPI_SPEC = {
       rankFilter:      { name: "rank",        in: "query", schema: { type: "string", enum: ["Species","Subspecies","Variety","Form"] } },
       growthHabitFilter: { name: "growth_habit", in: "query", schema: { type: "string", enum: ["Tree","Shrub","Subshrub","Vine","Forb/herb","Forb","Graminoid","Nonvascular","Lichenous"] } },
       durationFilter:  { name: "duration",    in: "query", schema: { type: "string", enum: ["Annual","Biennial","Perennial"] } },
-      nativityFilter:  { name: "nativity",    in: "query", schema: { type: "string", enum: ["Native","Introduced","Both"] } },
+      nativityFilter:  { name: "nativity",    in: "query", description: "USDA's county-level nativity for the plant × county record (comma-separated OR). Not derived from the regional native_status.", schema: { type: "string", enum: ["Native","Introduced","Both"] } },
+      photoLicenseFilter: { name: "photo_license", in: "query", description: "Restrict to taxa whose iNaturalist photo carries one of these license codes (comma-separated OR). Commercial-safe set: cc0,pd,cc-by,cc-by-sa,cc-by-nd. NC-licensed photos (cc-by-nc, cc-by-nc-sa, cc-by-nc-nd) are the majority and may not be used commercially.", schema: { type: "string", example: "cc0,pd,cc-by,cc-by-sa" } },
+      hasPhotoFilter:  { name: "has_photo", in: "query", description: "1/0 — only taxa with (or without) an iNaturalist photo.", schema: { type: "string", enum: ["1","0","true","false","yes","no"] } },
       wetlandCodeFilter: { name: "wetland_code", in: "query", description: "Wetland indicator code from USDA — OBL (obligate wetland), FACW (facultative wetland), FAC (facultative), FACU (facultative upland), UPL (obligate upland), NL (no indicator).", schema: { type: "string", enum: ["OBL","FACW","FAC","FACU","UPL","NL"] } },
       droughtTolerance:{ name: "drought_tolerance", in: "query", schema: { type: "string", enum: ["High","Medium","Low","None"] } },
       shadeTolerance:  { name: "shade_tolerance",   in: "query", schema: { type: "string", enum: ["Intolerant","Intermediate","Tolerant"] } },
@@ -709,8 +829,102 @@ export const OPENAPI_SPEC = {
         required: ["ok", "dataset_version", "schema_version"],
         properties: {
           ok:               { type: "boolean" },
-          dataset_version:  { type: "string" },
-          schema_version:   { type: "string" },
+          dataset_version:  { type: "string", example: "2026.05", description: "Date-based dataset tag (YYYY.MM), matching the `data-vYYYY.MM` release tags." },
+          dataset_date:     { type: "string", nullable: true, example: "2026-05-26", description: "Date of the USDA PLANTS pull the loaded dataset was built from." },
+          schema_version:   { type: "string", nullable: true, example: "008" },
+          api_version:      { type: "string", example: "1.2.0", description: "This OpenAPI document's `info.version`." },
+          sources: {
+            type: "object",
+            properties: {
+              usda_plants_pulled:        { type: "string", nullable: true, example: "2026-05-26" },
+              usda_hardiness_edition:    { type: "string", nullable: true, example: "2023" },
+              census_zcta_vintage:       { type: "string", nullable: true, example: "2020" },
+              inaturalist_photos_pulled: { type: "string", nullable: true },
+            },
+          },
+          counts: {
+            type: "object",
+            description: "Null for any count the build has not stamped yet.",
+            properties: {
+              taxa:                 { type: "integer", nullable: true },
+              states:               { type: "integer", nullable: true },
+              counties:             { type: "integer", nullable: true },
+              distribution_records: { type: "integer", nullable: true },
+              photos:               { type: "integer", nullable: true },
+              hardiness_zips:       { type: "integer", nullable: true },
+              hardiness_counties:   { type: "integer", nullable: true },
+              zip_counties:         { type: "integer", nullable: true },
+            },
+          },
+          usage: {
+            type: "object",
+            description: "Today's (UTC) database usage against the daily allowance. Figures are this server instance's view and can trail the true total by a couple of minutes.",
+            properties: {
+              day:               { type: "string", example: "2026-11-25" },
+              rows_read:         { type: "integer", example: 812344 },
+              daily_rows_budget: { type: "integer", nullable: true, example: 4000000, description: "Null when no budget is configured." },
+              budget_exhausted:  { type: "boolean" },
+              resets_in_seconds: { type: "integer", description: "Seconds until 00:00 UTC." },
+            },
+          },
+          releases: { type: "string", example: "https://github.com/cjscrofani/rootfast/releases" },
+        },
+      },
+      ZipCounty: {
+        type: "object",
+        properties: {
+          county_fips: { type: "string", example: "30031" },
+          county_name: { type: "string", example: "Gallatin" },
+          state_code:  { type: "string", example: "MT" },
+          land_share:  { type: "number", example: 0.918, description: "Fraction of the ZIP's land area inside this county (0–1)." },
+          taxa_count:  { type: "integer", example: 1362 },
+        },
+      },
+      ZipLookupResponse: {
+        type: "object",
+        properties: {
+          zip_code:       { type: "string", example: "59715" },
+          primary_county: { allOf: [{ $ref: "#/components/schemas/ZipCounty" }], nullable: true },
+          counties:       { type: "array", items: { $ref: "#/components/schemas/ZipCounty" } },
+          zone:           { allOf: [{ $ref: "#/components/schemas/HardinessZone" }], nullable: true },
+          note:           { type: "string" },
+          links: {
+            type: "object",
+            properties: { plants: { type: "string" }, native_plants: { type: "string" } },
+          },
+        },
+      },
+      ZipPlantsResponse: {
+        type: "object",
+        properties: {
+          zip_code: { type: "string" },
+          scope:    { type: "string", enum: ["all", "primary"] },
+          zone:     { allOf: [{ $ref: "#/components/schemas/HardinessZone" }], nullable: true },
+          counties: { type: "array", items: { $ref: "#/components/schemas/ZipCounty" } },
+          counts:   { type: "object", properties: { taxa: { type: "integer" }, counties: { type: "integer" } } },
+          paging:   { $ref: "#/components/schemas/Paging" },
+          sort:     { type: "string" },
+          filters:  { type: "object", nullable: true, additionalProperties: { type: "string" } },
+          note:     { type: "string" },
+          plants: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                usda_symbol:         { type: "string" },
+                scientific_name:     { type: "string" },
+                common_name:         { type: "string", nullable: true },
+                family:              { type: "string", nullable: true },
+                photo_thumb_url:     { type: "string", nullable: true },
+                photo_license:       { type: "string", nullable: true },
+                county_count:        { type: "integer", description: "Counties within the ZIP scope where the taxon is recorded." },
+                native_counties:     { type: "integer" },
+                introduced_counties: { type: "integer" },
+                both_counties:       { type: "integer" },
+                nativity:            { type: "string", enum: ["Native", "Introduced", "Both"], description: "Rollup across the ZIP's counties." },
+              },
+            },
+          },
         },
       },
       Error: {
@@ -1199,6 +1413,27 @@ export const OPENAPI_SPEC = {
         description: "Not found",
         content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
       },
+      BudgetExhausted: {
+        description:
+          "The day's shared database allowance is spent. Answers already cached are still served; " +
+          "anything else gets this response until 00:00 UTC. Can be returned by any `/v1` data route. " +
+          "The same status with `error.code = busy` and `Retry-After: 5` means the allowance is nearly " +
+          "spent and requests already running hold the rest; retry shortly.",
+        headers: {
+          "Retry-After": { schema: { type: "integer" }, description: "Seconds until 00:00 UTC, when the allowance resets." },
+        },
+        content: {
+          "application/json": {
+            schema: {
+              allOf: [
+                { $ref: "#/components/schemas/Error" },
+                { type: "object", properties: { retry_after: { type: "integer" } } },
+              ],
+            },
+            example: { error: { code: "daily_budget_exhausted", message: "Rootfast has used today's database allowance. …" }, retry_after: 7435 },
+          },
+        },
+      },
       RateLimited: {
         description:
           "Rate limit exceeded. See top-level description for per-tier limits. " +
@@ -1215,7 +1450,7 @@ export const OPENAPI_SPEC = {
                 {
                   type: "object",
                   properties: {
-                    tier:        { type: "string", enum: ["default", "bulk", "search"] },
+                    tier:        { type: "string", enum: ["default", "bulk", "search", "finder"] },
                     retry_after: { type: "integer" },
                   },
                 },

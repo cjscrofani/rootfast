@@ -4,6 +4,10 @@ export const prerender = true;
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import CodeBlock from '@/components/CodeBlock.astro';
 import { API_BASE } from '@/lib/api';
+import { datasetStats } from '@/lib/stats';
+
+// Build-time /healthz so the sample below shows real versions, not a stale literal.
+const stats = await datasetStats();
 
 interface Endpoint {
   id: string;
@@ -20,13 +24,39 @@ const endpoints: Endpoint[] = [
     method: 'GET',
     path: '/healthz',
     short: 'Service health & version',
-    desc: 'Returns dataset version and applied schema migration. Useful as a liveness check.',
+    desc: 'Liveness plus provenance: the date-based dataset version, the USDA pull date it was built from, the applied schema migration, source editions, and headline row counts — all read from the database, so they reflect what is actually loaded. Not cached.',
     example: {
       url: `${API_BASE}/healthz`,
       sample: `{
   "ok": true,
-  "dataset_version": "0.0.1",
-  "schema_version": "001"
+  "dataset_version": "${stats.datasetVersion}",
+  "dataset_date": "${stats.datasetDate}",
+  "schema_version": "${stats.schemaVersion}",
+  "api_version": "${stats.apiVersion}",
+  "sources": {
+    "usda_plants_pulled": "${stats.usdaPulled}",
+    "usda_hardiness_edition": "2023",
+    "census_zcta_vintage": "2020",
+    "inaturalist_photos_pulled": "${stats.usdaPulled}"
+  },
+  "counts": {
+    "taxa": ${stats.taxa},
+    "states": ${stats.states},
+    "counties": ${stats.counties},
+    "distribution_records": ${stats.distributionRecords},
+    "photos": ${stats.photos},
+    "hardiness_zips": ${stats.hardinessZips},
+    "hardiness_counties": ${stats.hardinessCounties},
+    "zip_counties": ${stats.zipCounties}
+  },
+  "usage": {
+    "day": "2026-11-25",
+    "rows_read": 812344,
+    "daily_rows_budget": 4000000,
+    "budget_exhausted": false,
+    "resets_in_seconds": 7435
+  },
+  "releases": "https://github.com/cjscrofani/rootfast/releases"
 }`,
     },
   },
@@ -35,7 +65,7 @@ const endpoints: Endpoint[] = [
     method: 'GET',
     path: '/v1/plants/{usda_symbol}',
     short: 'One plant, in full',
-    desc: 'Returns a plant record with growth habit, duration, native status by region, every USDA characteristic, and all Montana counties where the taxon is recorded. Resolves synonyms transparently.',
+    desc: 'Returns a plant record with growth habit, duration, USDA regional native status, every USDA characteristic, the photo (with its own license), and every US county where the taxon is recorded, each with USDA\'s county-level nativity. Resolves synonyms transparently. See §N for how nativity is sourced.',
     example: {
       url: `${API_BASE}/v1/plants/PIPO`,
       sample: `{
@@ -68,7 +98,7 @@ const endpoints: Endpoint[] = [
     method: 'GET',
     path: '/v1/plants?{filters}&format={json|csv|ndjson}',
     short: 'Flat catalogue',
-    desc: 'Every taxon in the catalogue as a flat list, one row per plant — no county aggregation. Accepts the filter parameters under §F (except `nativity`, which requires a distribution join). Use `format=csv` or `format=ndjson` to download in bulk; the response is sent as an attachment with a `rootfast-plants.csv` filename. JSON pagination defaults to 5000 (max 10000); bulk downloads return up to 50000 in a single call.',
+    desc: 'Every taxon in the catalogue as a flat list, one row per plant — no county aggregation. Accepts the filter parameters under §F (except `nativity`, which requires a distribution join). Use `format=csv` or `format=ndjson` to download in bulk; the response is sent as an attachment with a `rootfast-plants.csv` filename. JSON pagination defaults to 5000 (max 10000); bulk downloads return up to 10000 per call (page with `offset`).',
     example: {
       url: `${API_BASE}/v1/plants?family=Pinaceae&limit=2`,
       sample: `{
@@ -424,6 +454,50 @@ const endpoints: Endpoint[] = [
     },
   },
   {
+    id: 'zip',
+    method: 'GET',
+    path: '/v1/zip/{zip}',
+    short: 'ZIP → counties + zone',
+    desc: 'Everything locality-shaped we know about a US ZIP in one call: the county or counties it covers (largest land share first, each with a taxa count) and its USDA hardiness zone. County mapping is the US Census 2020 ZCTA-to-county relationship file; PO-box-only ZIPs have no ZCTA and return an empty county list. Accepts ZIP+4.',
+    example: {
+      url: `${API_BASE}/v1/zip/59715`,
+      sample: `{
+  "zip_code": "59715",
+  "primary_county": { "county_fips": "30031", "county_name": "Gallatin", "state_code": "MT", "land_share": 0.918, "taxa_count": 1362 },
+  "counties": [
+    { "county_fips": "30031", "county_name": "Gallatin", "state_code": "MT", "land_share": 0.918, "taxa_count": 1362 },
+    { "county_fips": "30067", "county_name": "Park",     "state_code": "MT", "land_share": 0.082, "taxa_count": 1104 }
+  ],
+  "zone": { "zone_code": "5a", "zone_class_code": 9, "temp_min_f": -20, "temp_max_f": -15, "description": "5a (-20 to -15 °F)" },
+  "links": { "plants": "/v1/zip/59715/plants", "native_plants": "/v1/zip/59715/plants?nativity=Native" }
+}`,
+    },
+  },
+  {
+    id: 'zip_plants',
+    method: 'GET',
+    path: '/v1/zip/{zip}/plants?{filters}',
+    short: 'Plants by ZIP code',
+    desc: 'The "what grows where I live?" endpoint. Every taxon recorded in the counties a ZIP covers — all of them by default, or just the primary county with scope=primary — aggregated per taxon with the same nativity rollup as the state listing. Accepts every §F filter, paging, sort=sci|common|counties, and format=csv|ndjson. Combine zone.temp_min_f with max_temperature_f to keep only taxa that survive the ZIP\'s winter.',
+    example: {
+      url: `${API_BASE}/v1/zip/59715/plants?nativity=Native&growth_habit=Tree&limit=2`,
+      sample: `{
+  "zip_code": "59715",
+  "scope": "all",
+  "zone": { "zone_code": "5a", "temp_min_f": -20, "temp_max_f": -15, "...": "..." },
+  "counties": [ { "county_fips": "30031", "county_name": "Gallatin", "state_code": "MT", "land_share": 0.918, "taxa_count": 1362 }, { "...": "..." } ],
+  "counts": { "taxa": 27, "counties": 2 },
+  "paging": { "limit": 2, "offset": 0, "count": 2, "has_more": true },
+  "filters": { "nativity": "Native", "growth_habit": "Tree" },
+  "plants": [
+    { "usda_symbol": "ABLA", "scientific_name": "Abies lasiocarpa (Hook.) Nutt.", "common_name": "subalpine fir", "family": "Pinaceae Spreng. ex Rudolphi",
+      "photo_thumb_url": "...", "photo_license": "cc-by-nc",
+      "county_count": 2, "native_counties": 2, "introduced_counties": 0, "both_counties": 0, "nativity": "Native" }
+  ]
+}`,
+    },
+  },
+  {
     id: 'hardiness_county',
     method: 'GET',
     path: '/v1/hardiness/county/{county_fips}',
@@ -469,20 +543,20 @@ const endpoints: Endpoint[] = [
     method: 'GET',
     path: '/v1/openapi.json',
     short: 'OpenAPI 3.0 spec',
-    desc: 'Machine-readable description of every endpoint, parameter, response shape, and error code. Drop it into Postman / Insomnia / Bruno, generate typed clients with openapi-generator, validate responses in CI, or feed it to LLM tool-calling frameworks so AI agents can use the API directly. The companion interactive UI lives at /v1/docs (Scalar). Spec version 1.0.0.',
+    desc: 'Machine-readable description of every endpoint, parameter, response shape, and error code. Drop it into Postman / Insomnia / Bruno, generate typed clients with openapi-generator, validate responses in CI, or feed it to LLM tool-calling frameworks so AI agents can use the API directly. The companion interactive UI lives at /v1/docs (Scalar). Spec version ' + stats.apiVersion + '.',
     example: {
       url: `${API_BASE}/v1/openapi.json`,
       sample: `{
   "openapi": "3.0.3",
   "info": {
     "title": "Rootfast API",
-    "version": "1.0.0",
+    "version": "${stats.apiVersion}",
     ...
   },
   "servers": [
     { "url": "https://api.rootfast.org" }
   ],
-  "paths": { /* 19 paths */ },
+  "paths": { /* 27 paths */ },
   "components": { /* schemas, parameters, responses */ }
 }`,
     },
@@ -491,8 +565,8 @@ const endpoints: Endpoint[] = [
 ---
 
 <BaseLayout
-  title="API documentation — rootfast"
-  description="Endpoint reference for the Rootfast plant API."
+  title="API reference — Rootfast native plant API (county-level USDA data, ZIP lookups)"
+  description="Endpoint reference for the Rootfast native plant API: plants by county, state, and ZIP code with USDA nativity, hardiness zones, filters, bulk CSV export, rate limits, licensing, and stability policy."
 >
   <div class="max-w-content mx-auto px-6 lg:px-10">
     <header class="pt-12 pb-8">
@@ -501,10 +575,10 @@ const endpoints: Endpoint[] = [
         The Rootfast API
       </h1>
       <p class="mt-4 font-serif text-xl italic text-ink-2 max-w-prose leading-relaxed">
-        A small, JSON-only HTTP API over USDA PLANTS, USDA Plant Hardiness Zones, and
-        the GBIF taxonomic backbone — joined together, served plain. No keys, no rate
-        limits in v1, no terms beyond attribution. Try every example below — it hits
-        the live service.
+        A small, JSON-only HTTP API over USDA PLANTS county-level nativity, USDA Plant
+        Hardiness Zones, a ZIP-to-county crosswalk, and the GBIF taxonomic backbone —
+        joined together, served plain. No keys, per-IP rate limits and a shared daily allowance (§R), no terms
+        beyond attribution. Try every example below — it hits the live service.
       </p>
       <p class="mt-4 mono text-sm text-ink-3">Base URL · {API_BASE}</p>
       <p class="mt-2 mono text-sm text-ink-3">
@@ -554,6 +628,14 @@ const endpoints: Endpoint[] = [
             </a>
           </li>
           <li class="border-b border-rule">
+            <a href="#nativity" class="block py-2.5 -mx-2 px-2 group hover:bg-surface transition-colors">
+              <div class="flex items-baseline gap-3 leading-snug">
+                <span class="font-serif italic text-xs text-ink-3 shrink-0 w-6">§N</span>
+                <p class="font-sans text-sm text-ink">Nativity, explained</p>
+              </div>
+            </a>
+          </li>
+          <li class="border-b border-rule">
             <a href="#errors" class="block py-2.5 -mx-2 px-2 group hover:bg-surface transition-colors">
               <div class="flex items-baseline gap-3 leading-snug">
                 <span class="font-serif italic text-xs text-ink-3 shrink-0 w-6">§E</span>
@@ -574,6 +656,14 @@ const endpoints: Endpoint[] = [
               <div class="flex items-baseline gap-3 leading-snug">
                 <span class="font-serif italic text-xs text-ink-3 shrink-0 w-6">§R</span>
                 <p class="font-sans text-sm text-ink">Rate limits</p>
+              </div>
+            </a>
+          </li>
+          <li class="border-b border-rule">
+            <a href="#stability" class="block py-2.5 -mx-2 px-2 group hover:bg-surface transition-colors">
+              <div class="flex items-baseline gap-3 leading-snug">
+                <span class="font-serif italic text-xs text-ink-3 shrink-0 w-6">§S</span>
+                <p class="font-sans text-sm text-ink">Stability & versions</p>
               </div>
             </a>
           </li>
@@ -644,8 +734,12 @@ const endpoints: Endpoint[] = [
             use. The response is sent as an attachment with a sensible
             filename; <code>Content-Type</code> is set to
             <code>text/csv</code> or <code>application/x-ndjson</code> as
-            appropriate. Bulk downloads default to no pagination cap (50 000
-            rows max per call); apply filters under §F to scope the result.
+            appropriate. A bulk call returns at most 10 000 rows: the
+            <code>X-Total-Count</code> header gives the full count and a
+            <code>Link: &lt;…&gt;; rel="next"</code> header gives the next
+            page while rows remain. Apply filters under §F to scope the
+            result, or take the whole dataset in one download from a
+            <a href="https://github.com/cjscrofani/rootfast/releases" class="link-hover text-ink">release</a>.
           </p>
           <p class="label mt-8 mb-3">Endpoints that support bulk</p>
           <ul class="space-y-1 text-sm text-ink-2 mt-3">
@@ -653,6 +747,7 @@ const endpoints: Endpoint[] = [
             <li>· <code>/v1/counties</code> — every US county <span class="text-ink-3">(also accepts <code>format=geojson</code> — see below)</span></li>
             <li>· <code>/v1/states/{`{code}`}/plants</code> — one state's taxa</li>
             <li>· <code>/v1/counties/{`{fips}`}/plants</code> — one county's taxa</li>
+            <li>· <code>/v1/zip/{`{zip}`}/plants</code> — the taxa around a ZIP code</li>
           </ul>
 
           <h3 class="mt-10 font-serif text-xl text-ink">GeoJSON output</h3>
@@ -674,7 +769,7 @@ fetch('https://api.rootfast.org/v1/counties?state=RI&format=geojson')
   .then(fc => L.geoJSON(fc).addTo(map));`}</pre>
 
           <p class="label mt-8 mb-3">Examples</p>
-          <pre class="rf-pre">{`# Whole catalogue as CSV
+          <pre class="rf-pre">{`# First 10,000 taxa as CSV (follow the Link header for the rest)
 curl -O 'https://api.rootfast.org/v1/plants?format=csv'
 
 # All MT plants as NDJSON (one JSON object per line)
@@ -698,9 +793,9 @@ curl 'https://api.rootfast.org/v1/counties?format=csv&limit=5000'`}</pre>
           <p class="label flex items-baseline gap-3"><span>§F</span><span>Filter parameters</span></p>
           <h2 class="mt-3 font-serif text-2xl text-ink">Narrow the list.</h2>
           <p class="mt-3 max-w-prose text-ink-2 leading-relaxed">
-            The list endpoints <code>/v1/states/{`{code}`}/plants</code> and
-            <code>/v1/counties/{`{fips}`}/plants</code> accept query parameters that filter
-            the result set. Multiple parameters AND together. Enum parameters
+            The list endpoints <code>/v1/plants</code>, <code>/v1/states/{`{code}`}/plants</code>,
+            <code>/v1/counties/{`{fips}`}/plants</code>, and <code>/v1/zip/{`{zip}`}/plants</code>
+            accept query parameters that filter the result set. Multiple parameters AND together. Enum parameters
             accept comma-separated lists (OR within the parameter). Invalid
             values return <code>400 bad_request</code>.
           </p>
@@ -712,7 +807,13 @@ curl 'https://api.rootfast.org/v1/counties?format=csv&limit=5000'`}</pre>
             <dt><code>rank</code></dt><dd>One of <code>Species,Subspecies,Variety,Form</code>.</dd>
             <dt><code>growth_habit</code></dt><dd>One of <code>Tree,Shrub,Subshrub,Vine,Forb/herb,Forb,Graminoid,Nonvascular,Lichenous</code>.</dd>
             <dt><code>duration</code></dt><dd>One of <code>Annual,Biennial,Perennial</code>.</dd>
-            <dt><code>nativity</code></dt><dd>One of <code>Native,Introduced,Both</code>. Filters at the county-record level.</dd>
+            <dt><code>nativity</code></dt><dd>One of <code>Native,Introduced,Both</code>. Filters on USDA's county-level record (see §N). Not available on <code>/v1/plants</code>, which has no county join.</dd>
+          </dl>
+
+          <p class="label mt-8 mb-3">Photo licensing</p>
+          <dl class="field-grid">
+            <dt><code>photo_license</code></dt><dd>Comma-separated iNaturalist license codes: <code>cc0,pd,cc-by,cc-by-sa,cc-by-nd,cc-by-nc,cc-by-nc-sa,cc-by-nc-nd</code>. The commercial-safe set is <code>cc0,pd,cc-by,cc-by-sa,cc-by-nd</code> — see §L.</dd>
+            <dt><code>has_photo</code></dt><dd><code>1/0</code> — only taxa with (or without) a photo.</dd>
           </dl>
 
           <p class="label mt-8 mb-3">Characteristics — enums</p>
@@ -766,7 +867,43 @@ GET /v1/states/RI/plants?growth_habit=Shrub&shade_tolerance=Intolerant&min_heigh
 GET /v1/states/MT/plants?family=Pinaceae
 
 # Trees or shrubs with high or medium drought tolerance
-GET /v1/states/AL/plants?growth_habit=Tree,Shrub&drought_tolerance=High,Medium`}</pre>
+GET /v1/states/AL/plants?growth_habit=Tree,Shrub&drought_tolerance=High,Medium
+
+# Native shrubs around ZIP 59715 that survive its zone-5a winter (-20 °F)
+GET /v1/zip/59715/plants?nativity=Native&growth_habit=Shrub&max_temperature_f=-20
+
+# Only taxa whose photo may be reused commercially
+GET /v1/counties/30031/plants?nativity=Native&photo_license=cc0,pd,cc-by,cc-by-sa`}</pre>
+        </section>
+
+        <section id="nativity" class="scroll-mt-12">
+          <p class="label flex items-baseline gap-3"><span>§N</span><span>Nativity, explained</span></p>
+          <h2 class="mt-3 font-serif text-2xl text-ink">County nativity is USDA's, not ours.</h2>
+          <p class="mt-3 max-w-prose text-ink-2 leading-relaxed">
+            USDA PLANTS publishes two different nativity facts and the API exposes both,
+            unchanged. The plant detail carries <code>native_status</code>: USDA's coarse
+            regional status per plant (<code>L48</code>, <code>AK</code>, <code>HI</code>,
+            <code>PR</code>, <code>VI</code>, <code>CAN</code>, …). Separately, USDA's county
+            distribution layer records every plant × county pair with its own
+            <code>Native</code> or <code>Introduced</code> flag. The <code>nativity</code>
+            on every county row in this API is that per-county USDA flag, stored as-is.
+            Nothing is inferred from the regional status, and the regional status is
+            never used to fill a county.
+          </p>
+          <dl class="mt-5 field-grid">
+            <dt><code>Native</code></dt><dd>USDA lists the taxon as native in that county.</dd>
+            <dt><code>Introduced</code></dt><dd>USDA lists it as introduced there.</dd>
+            <dt><code>Both</code></dt><dd>USDA's layer carries the county under both flags (it happens; we keep it rather than pick one).</dd>
+          </dl>
+          <p class="mt-5 max-w-prose text-ink-2 leading-relaxed">
+            State and ZIP listings aggregate county rows per taxon: <code>Native</code> if
+            every county is native, <code>Introduced</code> if every county is introduced,
+            otherwise <code>Both</code>. The per-county breakdown
+            (<code>native_counties</code>, <code>introduced_counties</code>, <code>both_counties</code>)
+            travels with each row so you can apply your own rule. Note that a taxon can be
+            native in one county and introduced in the next, and that a regional
+            <code>L48 = Native</code> says nothing about any particular county.
+          </p>
         </section>
 
         <section id="errors" class="scroll-mt-12">
@@ -781,8 +918,11 @@ GET /v1/states/AL/plants?growth_habit=Tree,Shrub&drought_tolerance=High,Medium`}
           <dl class="mt-5 field-grid">
             <dt><span class="mono">400</span></dt><dd><code>bad_request</code> — Malformed query (e.g. invalid <code>limit</code>).</dd>
             <dt><span class="mono">404</span></dt><dd><code>not_found</code> — Unknown plant symbol, county FIPS, state code, or route.</dd>
-            <dt><span class="mono">405</span></dt><dd><code>method_not_allowed</code> — Only <code>GET</code> and <code>HEAD</code> are supported.</dd>
+            <dt><span class="mono">405</span></dt><dd><code>method_not_allowed</code> — <code>GET</code> and <code>HEAD</code> everywhere; <code>POST</code> only on <code>/v1/plants/search</code>.</dd>
+            <dt><span class="mono">429</span></dt><dd><code>rate_limited</code> — Per-IP quota exceeded; see §R for the <code>Retry-After</code> contract.</dd>
             <dt><span class="mono">500</span></dt><dd><code>internal_error</code> — Server-side fault. Rare; please include the URL when reporting.</dd>
+            <dt><span class="mono">503</span></dt><dd><code>daily_budget_exhausted</code> — The day's shared database allowance is spent; see §R. <code>Retry-After</code> counts down to 00:00 UTC.</dd>
+            <dt><span class="mono">503</span></dt><dd><code>busy</code> — The allowance is nearly spent and requests already running hold the rest. <code>Retry-After: 5</code>; a retry normally succeeds.</dd>
           </dl>
         </section>
 
@@ -798,7 +938,7 @@ GET /v1/states/AL/plants?growth_habit=Tree,Shrub&drought_tolerance=High,Medium`}
           <dl class="mt-5 field-grid">
             <dt><span class="mono">/healthz</span></dt><dd><code>no-store</code> — always fresh.</dd>
             <dt><span class="mono">/v1/plants/{`{symbol}`}</span></dt><dd><code>max-age=3600, s-maxage=86400</code></dd>
-            <dt><span class="mono">/v1/plants/random</span></dt><dd><code>max-age=0, s-maxage=60</code> — rotates ~every minute.</dd>
+            <dt><span class="mono">/v1/plants/random</span></dt><dd><code>max-age=0, s-maxage=60</code> — rotates about every minute per Cloudflare location.</dd>
             <dt><span class="mono">/v1/counties[/...]</span></dt><dd><code>max-age=600–3600, s-maxage=86400</code></dd>
             <dt><span class="mono">/v1/states[/...]</span></dt><dd><code>max-age=600, s-maxage=86400</code></dd>
             <dt><span class="mono">/v1/search</span></dt><dd><code>max-age=60, s-maxage=300</code></dd>
@@ -826,21 +966,23 @@ curl -sI -H "If-None-Match: $ETAG" \\
 
         <section id="rate-limits" class="scroll-mt-12">
           <p class="label flex items-baseline gap-3"><span>§R</span><span>Rate limits</span></p>
-          <h2 class="mt-3 font-serif text-2xl text-ink">Be polite. Limits are generous.</h2>
+          <h2 class="mt-3 font-serif text-2xl text-ink">Be polite. The allowance is shared.</h2>
           <p class="mt-3 max-w-prose text-ink-2 leading-relaxed">
             The API is open and uncapped at the dataset level — CC0, no keys,
             no commercial gating. We do enforce per-IP rate limits to keep a
             single client from squeezing the service for everyone else.
-            Limits are intentionally loose for normal browsing and tight only
-            on the bulk-export and search endpoints, which are the only ones
-            that can do real damage to the underlying D1.
+            Limits are comfortable for normal browsing and tight on the
+            bulk-export, search and plant-finder endpoints. Answers served
+            from Cloudflare's edge cache do not count against them. IPv6
+            clients are counted per /64.
           </p>
 
           <dl class="mt-5 field-grid">
-            <dt>Default (most endpoints)</dt><dd><span class="mono">120 req / 60 s / IP</span> — ≈ 2 requests/second sustained.</dd>
-            <dt>Bulk export (<span class="mono">?format=csv</span> or <span class="mono">?format=ndjson</span>)</dt><dd><span class="mono">5 req / 60 s / IP</span> — pull whole-state catalogues sparingly.</dd>
-            <dt>Search (<span class="mono">/v1/search</span> &amp; <span class="mono">POST /v1/plants/search</span>)</dt><dd><span class="mono">60 req / 60 s / IP</span> — debounce live-search UIs.</dd>
-            <dt><span class="mono">/healthz</span>, <span class="mono">/v1/openapi.json</span>, <span class="mono">/v1/docs</span></dt><dd><em>No limit.</em> Cheap, edge-cached, frequently polled.</dd>
+            <dt>Default (most endpoints)</dt><dd><span class="mono">60 req / 60 s / IP</span> — ≈ 1 request/second sustained.</dd>
+            <dt>Bulk export (<span class="mono">?format=csv</span> or <span class="mono">?format=ndjson</span>)</dt><dd><span class="mono">2 req / 60 s / IP</span> — up to 10,000 rows per call; for everything, download a <a href="https://github.com/cjscrofani/rootfast/releases" class="link-hover text-ink">dataset release</a>.</dd>
+            <dt>Search (<span class="mono">/v1/search</span>)</dt><dd><span class="mono">30 req / 60 s / IP</span> — debounce live-search UIs.</dd>
+            <dt>Plant finder (<span class="mono">POST /v1/plants/search</span>)</dt><dd><span class="mono">2 req / 60 s / IP</span> — it aggregates whole states and is never cached.</dd>
+            <dt><span class="mono">/healthz</span>, <span class="mono">/v1/openapi.json</span>, <span class="mono">/v1/docs</span></dt><dd><em>No limit.</em> Cheap and frequently polled.</dd>
           </dl>
 
           <h3 class="mt-10 font-serif text-xl text-ink">When you hit one</h3>
@@ -853,17 +995,53 @@ curl -sI -H "If-None-Match: $ETAG" \\
 {
   "error": {
     "code": "rate_limited",
-    "message": "Bulk-export quota exceeded (5 req/min/IP). Slow down or filter the export."
+    "message": "Bulk-export quota exceeded (2 req/min/IP). Slow down, filter the export, or download the dataset release."
   },
   "tier": "bulk",
   "retry_after": 60
 }`}</pre>
+
+          <h3 class="mt-10 font-serif text-xl text-ink">The daily allowance</h3>
+          <p class="mt-3 max-w-prose text-ink-2 leading-relaxed">
+            Rootfast runs on a fixed daily database allowance, shared by every
+            client and by this website. If it runs out, answers already
+            cached keep being served and everything else returns
+            <code>503</code> with the error code
+            <code>daily_budget_exhausted</code> and a <code>Retry-After</code>
+            header counting down to 00:00 UTC, when the allowance resets.
+            <code>/healthz</code> reports the day's figure under
+            <code>usage</code>. Responses under <code>/v1</code> say where
+            they came from in an <code>x-rootfast-cache</code> header:
+            <code>edge</code>, <code>store</code>, or <code>miss</code>.
+          </p>
 
           <p class="mt-6 max-w-prose text-ink-2 leading-relaxed">
             Hitting the limits regularly under legitimate use? Get in touch via
             <a href="/contact" class="link-hover text-ink">contact</a> and we'll
             sort out a higher quota — limits are calibrated against today's
             traffic, not against any particular user.
+          </p>
+        </section>
+
+        <section id="stability" class="scroll-mt-12">
+          <p class="label flex items-baseline gap-3"><span>§S</span><span>Stability & versions</span></p>
+          <h2 class="mt-3 font-serif text-2xl text-ink">/v1 is stable. Data is versioned.</h2>
+          <p class="mt-3 max-w-prose text-ink-2 leading-relaxed">
+            Three things carry a version and they mean different things:
+          </p>
+          <dl class="mt-5 field-grid">
+            <dt>API surface</dt><dd><code>/v1</code> in the path. Fields are only ever added, never renamed, removed, or retyped. A breaking change ships as <code>/v2</code> and <code>/v1</code> stays up for at least twelve months after, with a <code>Deprecation</code> header on every response and a notice in the <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/blob/main/CHANGELOG.md" target="_blank" rel="noreferrer">CHANGELOG ↗</a>.</dd>
+            <dt>OpenAPI document</dt><dd><code>info.version</code> (currently {stats.apiVersion}). Bumped on every additive change so generated clients can tell what they were built against.</dd>
+            <dt>Limits</dt><dd>Rate limits, page-size caps and the daily allowance (§R) are operational settings, not part of the <code>/v1</code> contract. They can change without a new version; every change is listed in the CHANGELOG.</dd>
+            <dt>Dataset</dt><dd><code>dataset_version</code> in <code>/healthz</code>, date-based (<code>YYYY.MM</code>), with the USDA pull date alongside. Every refresh is published as a <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/releases" target="_blank" rel="noreferrer">GitHub Release ↗</a> (full SQLite + Parquet, sha256 manifest), so you can pin a snapshot or keep running if this service ever goes away. Refreshes happen at least twice a year.</dd>
+          </dl>
+          <p class="mt-5 max-w-prose text-ink-2 leading-relaxed">
+            Rootfast is maintained by <a class="link-hover text-ink" href="https://github.com/cjscrofani" target="_blank" rel="noreferrer">CJ Scrofani</a>
+            and is built to fit Cloudflare's free tier, which is why the daily allowance
+            in §R exists. If traffic outgrows it the response is
+            tighter anonymous limits plus free keys for heavy users — never a paywall on
+            CC0 data. Outages and incidents are tracked as
+            <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/issues" target="_blank" rel="noreferrer">GitHub issues ↗</a>.
           </p>
         </section>
 
@@ -912,10 +1090,24 @@ curl -sI -H "If-None-Match: $ETAG" \\
               <li>· USDA PLANTS — public domain</li>
               <li>· USDA-ARS Plant Hardiness Zone Map (2023) — public domain</li>
               <li>· GBIF Backbone Taxonomy — <a class="link-hover text-ink" href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0</a></li>
-              <li>· iNaturalist photos — hot-linked, per-photo CC license preserved on each record</li>
+              <li>· iNaturalist photos — <strong>not CC0</strong>; each is hot-linked under the photographer's own license, carried in <code>photo.license</code></li>
               <li>· Rootfast code — <a class="link-hover text-ink" href="https://github.com/cjscrofani/rootfast/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT</a></li>
               <li>· Rootfast data — CC0 (excluding the photo URLs above)</li>
             </ul>
+          </div>
+          <div class="mt-6 border border-rule bg-surface p-5 max-w-prose">
+            <p class="label">Photos are the exception — read this before reusing one</p>
+            <p class="mt-3 text-sm text-ink-2 leading-relaxed">
+              The data is CC0 but the photographs are not. Each iNaturalist photo carries
+              its photographer's own Creative Commons license in <code>photo.license</code>
+              (and <code>photo_license</code> on list rows) with the attribution string in
+              <code>photo.attribution</code>. Most are <strong>non-commercial</strong>
+              (<code>cc-by-nc</code>, <code>cc-by-nc-sa</code>, <code>cc-by-nc-nd</code>) and
+              may not be used in commercial products. For commercial use, filter with
+              <code>photo_license=cc0,pd,cc-by,cc-by-sa,cc-by-nd</code>, honour the
+              <code>-sa</code> / <code>-nd</code> terms where present, and always show the
+              attribution. Photos are hot-linked from iNaturalist and never rehosted here.
+            </p>
           </div>
           <p class="mt-6 text-sm text-ink-3 italic">
             If you build something with this — a tool, a garden plan, a research paper —

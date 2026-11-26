@@ -12,8 +12,31 @@ import { stateSlugOf, slugifyCounty } from '@/lib/states';
 Astro.response.headers.set('cache-control', 'public, max-age=3600, s-maxage=86400');
 
 const urlParams   = Astro.url.searchParams;
-const stateParam  = (urlParams.get('state')  || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
-const countyParam = (urlParams.get('county') || '').replace(/[^0-9]/g, '').slice(0, 5);
+let stateParam    = (urlParams.get('state')  || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2);
+let countyParam   = (urlParams.get('county') || '').replace(/[^0-9]/g, '').slice(0, 5);
+
+// ZIP shortcut: `?zip=59715` resolves to the ZIP's primary county (largest
+// land share) and redirects to the canonical ?state=&county= URL so the rest
+// of the page — and the edge cache — only ever sees one form.
+const zipParam = (urlParams.get('zip') || '').replace(/[^0-9]/g, '').slice(0, 5);
+let zipError: string | null = null;
+if (zipParam.length === 5) {
+  try {
+    const z = await api.zip(zipParam);
+    if (z.primary_county) {
+      return Astro.redirect(
+        `/explore/where-i-live?state=${z.primary_county.state_code}&county=${z.primary_county.county_fips}`,
+        302,
+      );
+    }
+    zipError = `ZIP ${zipParam} has a hardiness zone but no county mapping (PO-box-only ZIPs have none). Pick your state and county instead.`;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) zipError = `We don't know ZIP ${zipParam}. Pick your state and county instead.`;
+    else return serviceUnavailable('This page');
+  }
+} else if (urlParams.has('zip')) {
+  zipError = 'Enter a 5-digit ZIP code.';
+}
 
 const PAGE_SIZE = 30;
 const rawPage = parseInt(urlParams.get('page') ?? '1', 10);
@@ -127,13 +150,28 @@ function qs(overrides: Record<string, string>): string {
         What should I plant here?
       </h1>
       <p class="mt-4 max-w-prose font-serif text-lg italic text-ink-2 leading-relaxed">
-        Pick your state and county. We return the plants recorded as
+        Enter your ZIP code, or pick your state and county. We return the plants recorded as
         <strong>native to your county</strong> that also tolerate your county's
         USDA hardiness zone — the intersection of <em>belongs here</em> and
         <em>survives here</em>.
       </p>
 
       <hr class="rule mt-7" />
+
+      <!-- Shortcut — ZIP -->
+      <form method="get" class="mt-6 flex flex-wrap items-end gap-4">
+        <div class="flex flex-col gap-1">
+          <label for="rf-zip" class="label">Your ZIP code</label>
+          <input
+            id="rf-zip" name="zip" type="text" inputmode="numeric" autocomplete="postal-code"
+            pattern="[0-9]{5}" maxlength="10" placeholder="59715" value={zipParam}
+            class="bg-paper border-b border-rule-strong py-1 px-1 text-lg mono w-40 focus:outline-none focus:border-native"
+          />
+        </div>
+        <button type="submit" class="btn btn-native">Find my county</button>
+        {zipError && <p class="basis-full text-sm text-ink-2 italic">{zipError}</p>}
+      </form>
+      <p class="mt-5 text-xs text-ink-3">— or —</p>
 
       <!-- Step 1 — state -->
       <form method="get" class="mt-6 flex flex-wrap items-end gap-4">

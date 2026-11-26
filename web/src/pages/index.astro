@@ -3,10 +3,16 @@ export const prerender = true;
 
 import BaseLayout from '@/layouts/BaseLayout.astro';
 import SearchIsland from '@/components/SearchIsland.astro';
-import { api, type HealthResponse } from '@/lib/api';
+import { api } from '@/lib/api';
+import { datasetStats, fmt } from '@/lib/stats';
 
-let health: HealthResponse | null = null;
-try { health = await api.health(); } catch { /* fine, render without it */ }
+// Headline numbers come from /healthz at build time (see lib/stats.ts) so the
+// home, about, and docs pages can never disagree with each other or the data.
+const stats = await datasetStats();
+const description =
+  `Free native plant API for the United States: county-level USDA nativity for ${fmt(stats.taxa)} taxa ` +
+  `across ${fmt(stats.counties)} counties, hardiness zones by ZIP and county, iNaturalist photos, ` +
+  `and the GBIF taxonomic backbone. Public-domain data, no API key.`;
 
 // Featured species thumbnails — fetched in parallel, fail-soft.
 async function thumb(symbol: string): Promise<string | null> {
@@ -29,17 +35,17 @@ const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
 ---
 
 <BaseLayout
-  title="rootfast — native plants of the United States, queryable"
-  description="A free, public-domain plant API and the website that browses it. Built from USDA PLANTS, USDA hardiness zones, iNaturalist photos, and the GBIF taxonomic backbone. 27,665 taxa across 54 states and territories."
+  title="Rootfast — Native Plant API for the United States (county-level USDA data)"
+  description={description}
 >
   <Fragment slot="head">
     <script type="application/ld+json" is:inline set:html={JSON.stringify({
       "@context": "https://schema.org",
       "@type": "WebSite",
       "name": "rootfast",
-      "alternateName": "rootfast — a digital herbarium",
+      "alternateName": "Rootfast native plant API",
       "url": "https://rootfast.org",
-      "description": "Free, public-domain native plant data for the United States. 27,665 taxa joined with USDA hardiness zones and iNaturalist photos.",
+      "description": description,
       "potentialAction": {
         "@type": "SearchAction",
         "target": {
@@ -48,6 +54,33 @@ const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
         },
         "query-input": "required name=search_term_string"
       }
+    })} />
+    <!-- Dataset markup so Google Dataset Search and similar indexes can find the data itself. -->
+    <script type="application/ld+json" is:inline set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "Dataset",
+      "name": "Rootfast — native plants of the United States by county",
+      "description": `${fmt(stats.taxa)} plant taxa with USDA county-level nativity (native / introduced) across ${fmt(stats.counties)} US counties, joined to USDA 2023 hardiness zones by ZIP and county, a ZIP-to-county crosswalk, iNaturalist photos, and GBIF Backbone taxon keys.`,
+      "url": "https://rootfast.org",
+      "sameAs": "https://github.com/cjscrofani/rootfast",
+      "license": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "isAccessibleForFree": true,
+      "version": stats.datasetVersion,
+      "dateModified": stats.datasetDate,
+      "keywords": ["native plants", "USDA PLANTS", "county nativity", "hardiness zones", "ZIP code", "GBIF", "biodiversity", "API"],
+      "spatialCoverage": { "@type": "Place", "name": "United States" },
+      "creator": { "@type": "Person", "name": "CJ Scrofani", "url": "https://github.com/cjscrofani" },
+      "isBasedOn": [
+        "https://plants.usda.gov/",
+        "https://planthardiness.ars.usda.gov/",
+        "https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c",
+        "https://www.inaturalist.org/"
+      ],
+      "distribution": [
+        { "@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://api.rootfast.org/v1/openapi.json", "name": "REST API (OpenAPI 3.0)" },
+        { "@type": "DataDownload", "encodingFormat": "text/csv", "contentUrl": "https://api.rootfast.org/v1/plants?format=csv", "name": "Plant catalogue (CSV, paged 10,000 rows per call)" },
+        { "@type": "DataDownload", "encodingFormat": "application/vnd.sqlite3", "contentUrl": "https://github.com/cjscrofani/rootfast/releases", "name": "Versioned SQLite + Parquet snapshots" }
+      ]
     })} />
   </Fragment>
   <!-- Hero — restrained editorial, no marketing fluff -->
@@ -59,13 +92,15 @@ const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
           <span>Vol. 1 · United States · nationwide</span>
         </p>
         <h1 class="mt-5 font-serif text-4xl sm:text-5xl lg:text-6xl leading-[1.02] tracking-tight text-ink">
-          A digital herbarium.
+          A native plant API,
+          <span class="block italic text-ink-2">county by county.</span>
         </h1>
         <p class="mt-7 max-w-prose font-serif text-xl leading-relaxed text-ink-2">
-          Rootfast joins USDA PLANTS distribution data, hardiness zones, iNaturalist photos,
-          and the GBIF taxonomic backbone into a single queryable surface. Every record
+          A digital herbarium for the United States. Rootfast joins USDA PLANTS county-level
+          nativity data, USDA hardiness zones, a ZIP-to-county crosswalk, iNaturalist photos,
+          and the GBIF taxonomic backbone into a single free, public-domain API. Every record
           traces back to a federal or open dataset; nothing is invented. Look up a plant.
-          Look up a county. Read the data plainly.
+          Look up a county or a ZIP code. Read the data plainly.
         </p>
 
         <div class="mt-10 flex flex-wrap items-center gap-4">
@@ -80,11 +115,15 @@ const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
         <ul class="mt-4 space-y-3 text-sm text-ink-2 leading-relaxed">
           <li class="flex items-baseline gap-3">
             <span class="text-native shrink-0">●</span>
-            <span><span class="text-ink font-medium">United States — live.</span> 55 of 56 states and territories. Browse <a href="/states" class="link-hover text-ink">by state</a>, drill into counties, read full taxon records with GBIF and iNaturalist linkage.</span>
+            <span><span class="text-ink font-medium">United States — live.</span> {fmt(stats.taxa)} taxa across {stats.states} of {stats.statesTotal} states and territories and {fmt(stats.counties)} counties. Browse <a href="/states" class="link-hover text-ink">by state</a>, drill into counties, read full taxon records with GBIF and iNaturalist linkage.</span>
           </li>
           <li class="flex items-baseline gap-3">
             <span class="text-native shrink-0">●</span>
-            <span><span class="text-ink font-medium">USDA hardiness zones — live.</span> 40,502 ZIPs and 3,199 counties mapped to the 2023 PHZM.</span>
+            <span><span class="text-ink font-medium">USDA hardiness zones — live.</span> {fmt(stats.hardinessZips)} ZIPs and {fmt(stats.hardinessCounties)} counties mapped to the 2023 PHZM.</span>
+          </li>
+          <li class="flex items-baseline gap-3">
+            <span class="text-native shrink-0">●</span>
+            <span><span class="text-ink font-medium">Plants by ZIP code — live.</span> {fmt(stats.zipCounties)} ZIPs resolve to their counties, so <a href="/explore/where-i-live" class="link-hover text-ink">what should I plant here?</a> takes a ZIP.</span>
           </li>
           <li class="flex items-baseline gap-3">
             <span class="text-ink-3 shrink-0">◐</span>
@@ -92,11 +131,9 @@ const [lere7Photo, alro3Photo, acgr3Photo] = await Promise.all([
           </li>
         </ul>
 
-        {health && (
-          <p class="mt-6 mono text-xs text-ink-3">
-            api healthy · v{health.dataset_version} · schema {health.schema_version}
-          </p>
-        )}
+        <p class="mt-6 mono text-xs text-ink-3">
+          {stats.live ? 'api healthy' : 'api status unknown'} · dataset {stats.datasetVersion} · USDA pull {stats.datasetDate} · schema {stats.schemaVersion}
+        </p>
       </aside>
     </div>
   </section>

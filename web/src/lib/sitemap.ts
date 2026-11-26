@@ -40,12 +40,16 @@ export function renderSitemapIndex(locs: string[]): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${body}\n</sitemapindex>\n`;
 }
 
-export function sitemapResponse(xml: string): Response {
+/** `complete: false` marks a sitemap that fell back to an empty or partial
+ *  list because the API call failed. It is still served (a valid, smaller
+ *  sitemap beats an error) but must not be cached: the rendered-page cache in
+ *  src/middleware.ts would otherwise keep the empty one for a day. */
+export function sitemapResponse(xml: string, complete: boolean = true): Response {
   return new Response(xml, {
     headers: {
       'content-type': 'application/xml; charset=utf-8',
       // Sitemap content only changes when the catalogue does (rare).
-      'cache-control': 'public, max-age=300, s-maxage=86400',
+      'cache-control': complete ? 'public, max-age=300, s-maxage=86400' : 'no-store',
     },
   });
 }
